@@ -1,59 +1,71 @@
 package dev.canonremote.app
 
 import android.app.Application
+import android.bluetooth.BluetoothAdapter
 import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.canonremote.app.relay.RelayLink
+import dev.canonremote.app.relay.RelayUiState
+import dev.canonremote.app.relay.RemoteLinkUi
+import dev.canonremote.app.settings.AppMode
 import dev.canonremote.app.ui.CameraActions
-import dev.canonremote.app.usb.UsbConnector
+import dev.canonremote.app.ui.connection.ConnectionActions
 import dev.canonremote.app.usb.UsbStatus
-import dev.canonremote.app.usb.UsbTransport
 import dev.canonremote.core.CameraSetting
 import dev.canonremote.core.CameraState
-import dev.canonremote.core.CanonCamera
-import dev.canonremote.core.ConnectionStatus
 import dev.canonremote.core.ControlsModel
 import dev.canonremote.core.FocusStep
 import dev.canonremote.core.LogBus
+import dev.canonremote.core.remote.LinkKind
+import dev.canonremote.core.remote.RemoteCamera
 import dev.canonremote.core.toControls
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
+/** UI side of [CameraHub]: the Appareil screen drives [CameraHub.activeCamera] whatever the mode. */
 @OptIn(ExperimentalCoroutinesApi::class)
-class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
+class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, ConnectionActions {
     val log: LogBus = (app as CanonRemoteApp).log
-    private val connector = UsbConnector(app, log)
+    val hub: CameraHub = (app as CanonRemoteApp).hub
 
-    private val camera = MutableStateFlow<CanonCamera?>(null)
+    val usbStatus: StateFlow<UsbStatus> = hub.usbStatus
+    val mode: StateFlow<AppMode> = hub.mode
+    val relayState: StateFlow<RelayUiState> = hub.relayState
+    val remoteLink: StateFlow<RemoteLinkUi> = hub.remoteLink
 
-    val usbStatus: StateFlow<UsbStatus> = connector.status
+    /** State of the USB camera (Connexion tab), whatever the mode. */
+    val usbCameraState: StateFlow<CameraState> = hub.usbCamera
+        .flatMapLatest { it?.state ?: flowOf(CameraState()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CameraState())
 
-    val cameraState: StateFlow<CameraState> = camera
-        .flatMapLatest { it?.state ?: emptyFlow() }
+    /** State of the camera the Appareil screen drives. */
+    val cameraState: StateFlow<CameraState> = hub.activeCamera
+        .flatMapLatest { it?.state ?: flowOf(CameraState()) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, CameraState())
 
     val controls: StateFlow<ControlsModel> = cameraState
         .map { it.toControls() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, CameraState().toControls())
 
-    private val rawFrames: StateFlow<ByteArray?> = camera
-        .flatMapLatest { it?.liveViewFrames ?: emptyFlow() }
+    /** True when the Appareil screen drives a relay over Bluetooth (no live view). */
+    val bluetoothRemote: StateFlow<Boolean> = hub.activeCamera
+        .map { it is RemoteCamera && it.link == LinkKind.BLUETOOTH }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private val rawFrames: StateFlow<ByteArray?> = hub.activeCamera
+        .flatMapLatest { it?.liveViewFrames ?: flowOf(null) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** Live view JPEG decoded off the main thread. */
@@ -62,96 +74,64 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    private val errorChannel = Channel<String>(Channel.BUFFERED)
-    val errors: Flow<String> = errorChannel.receiveAsFlow()
+    val errors: Flow<String> = hub.errors
 
-    init {
-        viewModelScope.launch {
-            cameraState.collect { s ->
-                s.lastError?.let {
-                    errorChannel.trySend(it)
-                    camera.value?.clearError()
-                }
-            }
-        }
-        viewModelScope.launch {
-            cameraState.collect { s -> connector.markConnected(s.status == ConnectionStatus.CONNECTED) }
-        }
-        viewModelScope.launch {
-            connector.status.collect { status ->
-                if (status is UsbStatus.NoDevice && cameraState.value.status != ConnectionStatus.DISCONNECTED) {
-                    log.warn("Appareil USB débranché")
-                    disconnect()
-                }
-            }
-        }
-    }
+    override fun connect() = hub.connectUsb()
 
-    private var transport: UsbTransport? = null
-    private var opening = false
+    override fun disconnect() = hub.disconnectUsb()
 
-    fun connect() {
-        if (opening || cameraState.value.status != ConnectionStatus.DISCONNECTED) return
-        connector.requestPermission { device ->
-            if (opening || cameraState.value.status != ConnectionStatus.DISCONNECTED) return@requestPermission
-            opening = true
-            viewModelScope.launch {
-              try {
-                val opened = withContext(Dispatchers.IO) { connector.open(device) }
-                if (opened == null) {
-                    log.error("Impossible d'ouvrir l'interface USB")
-                    errorChannel.trySend("Impossible d'ouvrir l'appareil en USB")
-                    return@launch
-                }
-                transport = opened
-                val cam = CanonCamera(opened, log, viewModelScope)
-                camera.value = cam
-                cam.connect()
-              } finally {
-                opening = false
-              }
-            }
-        }
-    }
+    override fun setMode(mode: AppMode) = hub.setMode(mode)
 
-    fun disconnect() {
-        val cam = camera.value ?: return
-        viewModelScope.launch {
-            withContext(NonCancellable) { cam.disconnect() }
-        }
-    }
+    override fun startRelay() = hub.startRelay()
+
+    override fun stopRelay() = hub.stopRelay()
+
+    override fun setRelayLink(link: RelayLink, enabled: Boolean) = hub.setRelayLink(link, enabled)
+
+    override fun restartBluetoothLink() = hub.restartBluetoothLink()
+
+    override fun restartHotspot() = hub.restartHotspot()
+
+    override fun connectRemote(target: RemoteTarget) = hub.connectRemote(target)
+
+    override fun reconnectRemote() = hub.reconnectRemote()
+
+    override fun reconnectRemoteWithCode(code: String) = hub.reconnectRemoteWithCode(code)
+
+    override fun disconnectRemote() = hub.disconnectRemote()
+
+    override fun discoverRelays(): Flow<RelayDiscovery> = hub.discoverRelays()
+
+    override fun bluetoothAdapter(): BluetoothAdapter? = hub.bluetoothAdapter()
 
     override fun onSet(setting: CameraSetting, value: Int) {
-        val cam = camera.value ?: return
+        val cam = hub.activeCamera.value ?: return
         viewModelScope.launch { cam.set(setting, value) }
     }
 
     override fun onShoot() {
-        val cam = camera.value ?: return
+        val cam = hub.activeCamera.value ?: return
         viewModelScope.launch { cam.shoot() }
     }
 
     override fun onAutofocus() {
-        val cam = camera.value ?: return
+        val cam = hub.activeCamera.value ?: return
         viewModelScope.launch { cam.autofocus() }
     }
 
     override fun onFocus(step: FocusStep) {
-        val cam = camera.value ?: return
+        val cam = hub.activeCamera.value ?: return
         viewModelScope.launch { cam.focus(step) }
     }
 
     override fun onLiveView(on: Boolean) {
-        val cam = camera.value ?: return
+        val cam = hub.activeCamera.value ?: return
         viewModelScope.launch { cam.setLiveView(on) }
     }
 
     override fun onCleared() {
-        try {
-            transport?.close()
-        } catch (_: Exception) {
-        }
-        connector.close()
+        // The app's UI is gone: as before, stop driving the camera, unless the relay keeps it.
+        hub.releaseIfIdle()
         super.onCleared()
     }
 }

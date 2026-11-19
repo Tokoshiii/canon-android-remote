@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,8 +32,12 @@ fun CameraScreen(
     frame: ImageBitmap?,
     actions: CameraActions,
     onStatusClick: () -> Unit,
+    statusLabel: String = controls.statusLabel,
+    bluetoothRemote: Boolean = false,
+    onSwitchToWifi: () -> Unit = {},
 ) {
     var pickerFor by rememberSaveable { mutableStateOf<CameraSetting?>(null) }
+    var bluetoothLiveViewDialog by rememberSaveable { mutableStateOf(false) }
     val picked = controls.tiles.firstOrNull { it.setting == pickerFor && it.enabled }
 
     Column(
@@ -49,7 +55,7 @@ fun CameraScreen(
             Text("Canon EOS 90D", style = MaterialTheme.typography.titleLarge)
             AssistChip(
                 onClick = onStatusClick,
-                label = { Text("● ${controls.statusLabel}") },
+                label = { Text("● $statusLabel") },
             )
         }
 
@@ -82,12 +88,39 @@ fun CameraScreen(
             Text("Live view", style = MaterialTheme.typography.bodyLarge)
             Switch(
                 checked = controls.liveViewOn,
-                onCheckedChange = actions::onLiveView,
+                onCheckedChange = { on ->
+                    // Over Bluetooth the live view is refused: explain instead of sending the command.
+                    if (on && bluetoothRemote) bluetoothLiveViewDialog = true else actions.onLiveView(on)
+                },
                 enabled = controls.liveViewToggleEnabled,
             )
         }
 
         ShutterButton(enabled = controls.shutterEnabled, onClick = actions::onShoot)
+    }
+
+    if (bluetoothLiveViewDialog) {
+        AlertDialog(
+            onDismissRequest = { bluetoothLiveViewDialog = false },
+            title = { Text(text = "Live view indisponible en Bluetooth") },
+            text = {
+                Text(
+                    text = "Le Bluetooth est trop lent pour le live view. Passe en Wi-Fi (réseau local ou " +
+                        "point d'accès du relais) pour l'utiliser.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        bluetoothLiveViewDialog = false
+                        onSwitchToWifi()
+                    },
+                ) { Text(text = "Passer en Wi-Fi") }
+            },
+            dismissButton = {
+                TextButton(onClick = { bluetoothLiveViewDialog = false }) { Text(text = "OK") }
+            },
+        )
     }
 
     if (picked != null) {
