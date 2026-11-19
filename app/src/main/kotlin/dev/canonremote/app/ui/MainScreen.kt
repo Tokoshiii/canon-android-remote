@@ -4,8 +4,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -43,7 +43,7 @@ private data class Tab(val label: String, val icon: ImageVector)
 private val TABS = listOf(
     Tab("Appareil", Icons.Filled.PhotoCamera),
     Tab("Connexion", Icons.Filled.Usb),
-    Tab("Logs", Icons.Filled.Article),
+    Tab("Paramètres", Icons.Filled.Settings),
 )
 
 @Composable
@@ -53,7 +53,7 @@ fun MainScreen(
     errors: Flow<String>,
     actions: CameraActions,
     connection: @Composable () -> Unit,
-    logs: @Composable () -> Unit,
+    settings: @Composable () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
@@ -82,7 +82,7 @@ fun MainScreen(
                     onStatusClick = { tab = 1 },
                 )
                 1 -> connection()
-                else -> logs()
+                else -> settings()
             }
         }
     }

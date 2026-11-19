@@ -26,4 +26,4 @@ Les APK suivants s'installent par-dessus le précédent grâce à la clé de deb
 
 ## Envoyer des logs
 
-Dans l'app, onglet **Logs** → **Copier les logs** → coller le texte dans le message.
+Dans l'app, onglet **Paramètres** → **Journal (logs)** → **Copier les logs** → coller le texte dans le message.
