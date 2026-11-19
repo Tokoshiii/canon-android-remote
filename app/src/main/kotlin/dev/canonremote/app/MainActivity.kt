@@ -57,8 +57,13 @@ class MainActivity : ComponentActivity() {
     private fun copyLogs() {
         val header = "Canon Remote ${BuildConfig.VERSION_NAME} — " +
             "${Build.MANUFACTURER} ${Build.MODEL} — Android ${Build.VERSION.RELEASE}"
-        val text = viewModel.log.export(header)
+        // Keep the clip well under the binder transaction limit.
+        val text = viewModel.log.export(header, maxChars = MAX_CLIP_CHARS)
         val clipboard = getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("Canon Remote logs", text))
+    }
+
+    private companion object {
+        const val MAX_CLIP_CHARS = 500_000
     }
 }

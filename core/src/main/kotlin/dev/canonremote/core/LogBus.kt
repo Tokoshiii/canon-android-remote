@@ -28,15 +28,25 @@ class LogBus(
         _entries.value = emptyList()
     }
 
-    fun export(header: String): String {
+    /**
+     * Formats the log for copying. If the result would exceed [maxChars], keeps the header and
+     * the most recent lines that fit, after a « … (début tronqué) » line.
+     */
+    fun export(header: String, maxChars: Int = Int.MAX_VALUE): String {
         val fmt = SimpleDateFormat("HH:mm:ss.SSS") // default time zone
-        return buildString {
-            append(header).append('\n').append('\n')
-            _entries.value.forEach {
-                append(fmt.format(Date(it.timeMillis))).append(' ')
-                    .append(it.level.name).append(' ').append(it.message).append('\n')
-            }
+        val lines = _entries.value.map { "${fmt.format(Date(it.timeMillis))} ${it.level.name} ${it.message}\n" }
+        val head = "$header\n\n"
+        if (head.length + lines.sumOf { it.length } <= maxChars) {
+            return head + lines.joinToString("")
         }
+        var budget = maxChars - head.length - TRUNCATED_MARKER.length
+        val kept = ArrayDeque<String>()
+        for (line in lines.asReversed()) {
+            if (line.length > budget) break
+            budget -= line.length
+            kept.addFirst(line)
+        }
+        return head + TRUNCATED_MARKER + kept.joinToString("")
     }
 
     private fun add(level: LogLevel, msg: String) {
@@ -44,6 +54,8 @@ class LogBus(
         _entries.update { (it + entry).takeLast(capacity) }
     }
 }
+
+private const val TRUNCATED_MARKER = "… (début tronqué)\n"
 
 fun ByteArray.toHexDump(max: Int = 64): String {
     val shown = take(max).joinToString(" ") { "%02x".format(it) }

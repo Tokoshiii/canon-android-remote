@@ -44,7 +44,8 @@ fun LogsScreen(
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
 
-    LaunchedEffect(entries.size) {
+    // Keyed on the last entry: once the ring buffer is full the size no longer changes.
+    LaunchedEffect(entries.lastOrNull()) {
         if (entries.isNotEmpty()) listState.scrollToItem(entries.lastIndex)
     }
 

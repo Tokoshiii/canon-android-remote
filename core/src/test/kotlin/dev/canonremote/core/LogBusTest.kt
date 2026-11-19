@@ -47,4 +47,20 @@ class LogBusTest {
         assertTrue(s, s.endsWith("(+6 octets)"))
         assertEquals("01 ff", byteArrayOf(1, -1).toHexDump())
     }
+
+    @Test
+    fun exportKeepsHeaderAndLastLinesWhenTooLong() {
+        val bus = LogBus()
+        (1..100).forEach { bus.info("ligne %03d".format(it)) }
+        val full = bus.export("HEADER")
+        val cut = bus.export("HEADER", maxChars = 200)
+        assertTrue(cut.length <= 200)
+        val lines = cut.trimEnd('\n').split("\n")
+        assertEquals("HEADER", lines[0])
+        assertEquals("", lines[1])
+        assertEquals("… (début tronqué)", lines[2])
+        assertTrue(lines.last().endsWith("ligne 100"))
+        assertTrue(full.endsWith(cut.substringAfter("… (début tronqué)\n")))
+        assertEquals(full, bus.export("HEADER", maxChars = full.length))
+    }
 }

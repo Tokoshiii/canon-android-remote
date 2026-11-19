@@ -30,6 +30,8 @@ class UsbConnector(context: Context, private val log: LogBus) {
 
     private var pendingGranted: ((UsbDevice) -> Unit)? = null
     private var connectedName: String? = null
+    /** Set by a refusal; cleared by a later grant or when the camera is unplugged. */
+    private var permissionDenied = false
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -42,10 +44,13 @@ class UsbConnector(context: Context, private val log: LogBus) {
                     pendingGranted = null
                     if (granted && device != null) {
                         log.info("Autorisation USB accordée")
+                        permissionDenied = false
+                        refresh()
                         callback?.invoke(device)
                     } else {
                         log.warn("Autorisation USB refusée")
-                        _status.value = UsbStatus.PermissionDenied
+                        permissionDenied = true
+                        refresh()
                     }
                 }
             }
@@ -73,10 +78,11 @@ class UsbConnector(context: Context, private val log: LogBus) {
 
     fun refresh() {
         val device = findCanon()
+        if (device == null) permissionDenied = false
         _status.value = when {
             device == null -> UsbStatus.NoDevice
             connectedName != null -> UsbStatus.Connected(connectedName!!)
-            _status.value is UsbStatus.PermissionDenied -> UsbStatus.PermissionDenied
+            permissionDenied -> UsbStatus.PermissionDenied
             else -> UsbStatus.Detected(deviceName(device))
         }
     }
@@ -88,6 +94,10 @@ class UsbConnector(context: Context, private val log: LogBus) {
             return
         }
         if (manager.hasPermission(device)) {
+            if (permissionDenied) {
+                permissionDenied = false
+                refresh()
+            }
             onGranted(device)
             return
         }
