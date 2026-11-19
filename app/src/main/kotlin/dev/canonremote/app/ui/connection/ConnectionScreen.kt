@@ -39,7 +39,7 @@ fun ConnectionScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Card(Modifier.fillMaxWidth()) {
+        Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("USB", style = MaterialTheme.typography.titleMedium)
                 Text(label, style = MaterialTheme.typography.bodyMedium)
@@ -51,7 +51,7 @@ fun ConnectionScreen(
             }
         }
         for (name in listOf("Wi-Fi", "Bluetooth", "Relais")) {
-            Card(Modifier.fillMaxWidth(), enabled = false, onClick = {}) {
+            Card(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(name, style = MaterialTheme.typography.titleMedium)
                     Text("Bientôt", style = MaterialTheme.typography.bodyMedium)
