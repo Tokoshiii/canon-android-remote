@@ -38,6 +38,8 @@ class RelayServer(
     private val pingIntervalMs: Long = 2000,
     private val linkTimeoutMs: Long = 6000,
     private val wrongCodeDelayMs: Long = 1000,
+    /** Reads the camera's current error right after a failed command (default: its state). */
+    private val currentError: () -> String? = { camera.state.value.lastError },
 ) {
     private val _clients = MutableStateFlow<RelayClient?>(null)
     val clients: StateFlow<RelayClient?> = _clients.asStateFlow()
@@ -178,7 +180,7 @@ class RelayServer(
                     is Action.LiveView -> camera.setLiveView(action.on)
                 }
                 // The camera's error is captured now: the relay's own UI may clear it at any time.
-                Message.Result(cmd.id, ok, if (ok) null else camera.state.value.lastError)
+                Message.Result(cmd.id, ok, if (ok) null else currentError())
             }
         } catch (e: CancellationException) {
             throw e

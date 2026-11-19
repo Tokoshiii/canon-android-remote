@@ -30,6 +30,9 @@ class FollowingCamera(
         .flatMapLatest { it?.liveViewFrames ?: flowOf(null) }
         .stateIn(scope, SharingStarted.Eagerly, source.value?.liveViewFrames?.value)
 
+    /** Error of the current camera itself ([state] is a copy that can lag by a dispatch). */
+    fun currentError(): String? = source.value?.state?.value?.lastError
+
     override suspend fun set(setting: CameraSetting, value: Int) = source.value?.set(setting, value) ?: false
     override suspend fun shoot() = source.value?.shoot() ?: false
     override suspend fun autofocus() = source.value?.autofocus() ?: false

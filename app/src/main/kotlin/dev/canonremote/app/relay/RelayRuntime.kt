@@ -48,7 +48,13 @@ internal class RelayRuntime(
 ) {
     private val scope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]) + Dispatchers.Default)
     private val camera = FollowingCamera(hub.usbCamera, scope)
-    private val server = RelayServer(camera = camera, log = hub.log, scope = scope, pairingCode = pairingCode)
+    private val server = RelayServer(
+        camera = camera,
+        log = hub.log,
+        scope = scope,
+        pairingCode = pairingCode,
+        currentError = camera::currentError,
+    )
     private val webSocket = RelayWebSocketServer(port = RELAY_WS_PORT) { channel -> server.accept(channel, LinkKind.WIFI) }
     private val nsd = RelayNsd(context)
     private val bluetooth: BluetoothRelayServer? =

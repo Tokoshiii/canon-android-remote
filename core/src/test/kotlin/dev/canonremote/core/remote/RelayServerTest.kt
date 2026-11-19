@@ -236,6 +236,22 @@ class RelayServerTest {
         )
     }
 
+    @Test fun failedResultUsesProvidedErrorSource() = runTest {
+        val camera = FakeController(camState).apply { result = false }
+        val server = RelayServer(camera, LogBus(), backgroundScope, CODE, currentError = { "Erreur réelle" })
+        val (relayEnd, remoteEnd) = MemoryChannel.pair()
+        val received = CopyOnWriteArrayList<Message>()
+        backgroundScope.launch {
+            runCatching { remoteEnd.incoming.collect { (it as? Incoming.Msg)?.let { m -> received += m.message } } }
+        }
+        server.accept(relayEnd, LinkKind.WIFI)
+        remoteEnd.send(Message.Hello(1, CODE, "Pixel"))
+        runCurrent()
+        remoteEnd.send(Message.Command(4, Action.Shoot))
+        runCurrent()
+        assertEquals(Message.Result(4, false, "Erreur réelle"), received.filterIsInstance<Message.Result>().single())
+    }
+
     @Test fun liveViewCommandForwardedOnWifi() = runTest {
         val h = Harness(this)
         val r = h.connected()

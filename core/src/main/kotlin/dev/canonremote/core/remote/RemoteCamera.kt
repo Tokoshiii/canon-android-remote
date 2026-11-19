@@ -382,6 +382,11 @@ class RemoteCamera(
             s.pending.remove(id)
             return false
         }
+        // A new command: an earlier failure's error must not hide (or be hidden by) this one's.
+        publish(s) {
+            s.mirroredError = null
+            s.resultError = null
+        }
         try {
             try {
                 s.channel.send(Message.Command(id, action))

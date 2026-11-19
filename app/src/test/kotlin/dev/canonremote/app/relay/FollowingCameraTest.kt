@@ -25,7 +25,13 @@ class FollowingCameraTest {
         override val liveViewFrames = MutableStateFlow<ByteArray?>(null)
         val calls = mutableListOf<String>()
         override suspend fun set(setting: CameraSetting, value: Int): Boolean { calls += "set $setting $value"; return true }
-        override suspend fun shoot(): Boolean { calls += "shoot"; return true }
+        @Volatile var failWith: String? = null
+        override suspend fun shoot(): Boolean {
+            calls += "shoot"
+            val e = failWith ?: return true
+            state.value = state.value.copy(lastError = e)
+            return false
+        }
         override suspend fun autofocus(): Boolean { calls += "af"; return true }
         override suspend fun focus(step: FocusStep): Boolean { calls += "focus $step"; return true }
         override suspend fun setLiveView(on: Boolean): Boolean { calls += "lv $on"; return true }
@@ -78,6 +84,24 @@ class FollowingCameraTest {
             following.disconnect()
             following.clearError()
             assertEquals(listOf("clear"), a.calls)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun currentErrorReadsTheCameraItselfNotTheLaggingCopy(): Unit = runBlocking {
+        // A scope whose dispatcher never runs anything: the stateIn copy cannot catch up.
+        val frozen = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) = Unit
+        }
+        val scope = CoroutineScope(SupervisorJob() + frozen)
+        try {
+            val a = FakeCamera("A").apply { failWith = "Déclenchement refusé" }
+            val following = FollowingCamera(MutableStateFlow<CameraController?>(a), scope)
+            assertFalse(following.shoot())
+            assertEquals(null, following.state.value.lastError) // the lagging copy
+            assertEquals("Déclenchement refusé", following.currentError())
         } finally {
             scope.cancel()
         }

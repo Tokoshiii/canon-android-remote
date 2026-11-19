@@ -535,6 +535,28 @@ class RemoteCameraTest {
         assertEquals(error, h.remote.state.value.lastError)
     }
 
+    @Test fun lateMirroredErrorDoesNotHideNextIdenticalFailure() = runTest {
+        val h = Scripted(this)
+        val error = "Déclenchement refusé : 0x2019"
+        h.onCommand = { s, c ->
+            if (c.id == 1) {
+                // relay read the error before it reached its state copy: Result without text, then state
+                s.channel.send(Message.Result(c.id, false))
+                s.channel.send(Message.StateMsg(camState.copy(lastError = error).toRemote()))
+            } else {
+                s.channel.send(Message.Result(c.id, false, error))
+            }
+        }
+        h.remote.connect()
+        runCurrent()
+        assertFalse(h.remote.shoot())
+        runCurrent()
+        assertEquals(error, h.remote.state.value.lastError)
+        h.remote.clearError()
+        assertFalse(h.remote.shoot())
+        assertEquals(error, h.remote.state.value.lastError)
+    }
+
     @Test fun relayCameraErrorReachesRemoteThroughResult() = runTest {
         val h = EndToEnd(this)
         h.remote.connect()
