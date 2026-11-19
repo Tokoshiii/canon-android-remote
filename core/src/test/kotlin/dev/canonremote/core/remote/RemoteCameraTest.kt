@@ -499,6 +499,52 @@ class RemoteCameraTest {
         assertNull(h.remote.state.value.lastError)
     }
 
+    @Test fun resultErrorNotShownAgainByMirroredState() = runTest {
+        val h = Scripted(this)
+        h.onCommand = { s, c -> s.channel.send(Message.Result(c.id, false, "Déclenchement refusé : 0x2019")) }
+        h.remote.connect()
+        runCurrent()
+        assertFalse(h.remote.shoot())
+        assertEquals("Déclenchement refusé : 0x2019", h.remote.state.value.lastError)
+        h.remote.clearError()
+        // the relay's state push carrying the same error arrives after the Result
+        h.sessions.single().channel.send(
+            Message.StateMsg(camState.copy(busy = true, lastError = "Déclenchement refusé : 0x2019").toRemote()),
+        )
+        runCurrent()
+        assertTrue(h.remote.state.value.busy)
+        assertNull(h.remote.state.value.lastError)
+    }
+
+    @Test fun repeatedIdenticalFailureShownAgainThroughResult() = runTest {
+        val h = Scripted(this)
+        val error = "Déclenchement refusé : 0x2019"
+        h.onCommand = { s, c ->
+            // The relay's camera keeps the same lastError: only the first failure changes its state.
+            if (c.id == 1) s.channel.send(Message.StateMsg(camState.copy(lastError = error).toRemote()))
+            s.channel.send(Message.Result(c.id, false, error))
+        }
+        h.remote.connect()
+        runCurrent()
+        assertFalse(h.remote.shoot())
+        assertEquals(error, h.remote.state.value.lastError)
+        h.remote.clearError()
+        runCurrent()
+        assertNull(h.remote.state.value.lastError) // the Result did not show it a second time
+        assertFalse(h.remote.shoot())
+        assertEquals(error, h.remote.state.value.lastError)
+    }
+
+    @Test fun relayCameraErrorReachesRemoteThroughResult() = runTest {
+        val h = EndToEnd(this)
+        h.remote.connect()
+        runCurrent()
+        h.camera.result = false
+        h.camera.errorOnFalse = "Déclenchement refusé : 0x2019"
+        assertFalse(h.remote.shoot())
+        assertEquals("Déclenchement refusé : 0x2019", h.remote.state.value.lastError)
+    }
+
     @Test fun rejectedDuringReconnectStops() = runTest {
         val h = Scripted(this)
         h.remote.connect()

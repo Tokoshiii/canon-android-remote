@@ -20,11 +20,14 @@ class FakeController(initial: CameraState = CameraState()) : CameraController {
     @Volatile var result: Boolean = true
     @Volatile var failure: Throwable? = null
     @Volatile var commandDelayMs: Long = 0
+    /** When set, a false result also puts this text in [state]'s lastError (like CanonCamera). */
+    @Volatile var errorOnFalse: String? = null
 
     private suspend fun run(call: String): Boolean {
         calls += call
         if (commandDelayMs > 0) delay(commandDelayMs)
         failure?.let { throw it }
+        if (!result) errorOnFalse?.let { e -> state.value = state.value.copy(lastError = e) }
         return result
     }
 

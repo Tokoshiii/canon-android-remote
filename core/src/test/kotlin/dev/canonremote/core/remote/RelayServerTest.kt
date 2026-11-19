@@ -102,6 +102,12 @@ class RelayServerTest {
         val r = h.connect()
         r.hello(token = "000000")
         runCurrent()
+        // Wrong codes are answered after a delay, to slow down guessing.
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(emptyList<Message>(), r.messages)
+        advanceTimeBy(2)
+        runCurrent()
         assertEquals(listOf<Message>(Message.Rejected("Code d'appairage incorrect")), r.messages)
         assertNull(h.server.clients.value)
         h.assertEnded(r)
@@ -111,6 +117,7 @@ class RelayServerTest {
         val h = Harness(this)
         val r = h.connect()
         r.hello(token = null)
+        advanceTimeBy(1001)
         runCurrent()
         assertEquals(listOf<Message>(Message.Rejected("Code d'appairage incorrect")), r.messages)
         h.assertEnded(r)
@@ -213,6 +220,19 @@ class RelayServerTest {
         assertEquals(
             listOf(Message.Result(1, true), Message.Result(2, true)),
             r.messages.filterIsInstance<Message.Result>(),
+        )
+    }
+
+    @Test fun falseResultCarriesCameraError() = runTest {
+        val h = Harness(this)
+        val r = h.connected()
+        h.camera.result = false
+        h.camera.errorOnFalse = "Déclenchement refusé : 0x2019"
+        r.channel.send(Message.Command(3, Action.Shoot))
+        runCurrent()
+        assertEquals(
+            Message.Result(3, false, "Déclenchement refusé : 0x2019"),
+            r.messages.filterIsInstance<Message.Result>().single(),
         )
     }
 

@@ -37,6 +37,7 @@ class RelayServer(
     private val pairingCode: String,
     private val pingIntervalMs: Long = 2000,
     private val linkTimeoutMs: Long = 6000,
+    private val wrongCodeDelayMs: Long = 1000,
 ) {
     private val _clients = MutableStateFlow<RelayClient?>(null)
     val clients: StateFlow<RelayClient?> = _clients.asStateFlow()
@@ -119,6 +120,8 @@ class RelayServer(
                             val reason = handshake(msg, link)
                             if (reason != null) {
                                 log.warn("Télécommande « ${msg.clientName} » refusée : $reason")
+                                // Slows down guessing the pairing code.
+                                if (reason == WRONG_CODE) delay(wrongCodeDelayMs)
                                 channel.send(Message.Rejected(reason))
                                 stop()
                                 return@collect
@@ -156,7 +159,7 @@ class RelayServer(
     /** Returns the rejection reason, or null after claiming the relay for this client. */
     private fun handshake(hello: Message.Hello, link: LinkKind): String? = when {
         hello.protocol != MessageCodec.PROTOCOL -> "Version incompatible"
-        link == LinkKind.WIFI && hello.token != pairingCode -> "Code d'appairage incorrect"
+        link == LinkKind.WIFI && hello.token != pairingCode -> WRONG_CODE
         !_clients.compareAndSet(null, RelayClient(hello.clientName, link)) -> "Relais occupé"
         else -> null
     }
@@ -174,7 +177,8 @@ class RelayServer(
                     is Action.Focus -> camera.focus(action.step)
                     is Action.LiveView -> camera.setLiveView(action.on)
                 }
-                Message.Result(cmd.id, ok)
+                // The camera's error is captured now: the relay's own UI may clear it at any time.
+                Message.Result(cmd.id, ok, if (ok) null else camera.state.value.lastError)
             }
         } catch (e: CancellationException) {
             throw e
@@ -189,6 +193,10 @@ class RelayServer(
         } catch (e: Throwable) {
             // link gone: the remote reports the command as unconfirmed
         }
+    }
+
+    private companion object {
+        const val WRONG_CODE = "Code d'appairage incorrect"
     }
 
     private val LinkKind.label get() = if (this == LinkKind.WIFI) "Wi-Fi" else "Bluetooth"

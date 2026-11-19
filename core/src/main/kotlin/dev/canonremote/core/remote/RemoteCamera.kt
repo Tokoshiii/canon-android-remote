@@ -89,6 +89,10 @@ class RemoteCamera(
         @Volatile var welcomed = false
         /** Last lastError pushed by the relay, to mirror only its changes. */
         var relayError: String? = null
+        /** Error last reported by a Result: the relay's state push of the same error is not shown again. */
+        var resultError: String? = null
+        /** Error just shown from a state push: the Result of the same failure does not show it again. */
+        var mirroredError: String? = null
 
         @Volatile var endReason: End = End.Local
 
@@ -290,9 +294,12 @@ class RemoteCamera(
         val relay = remote.toCameraState()
         val previous = s.relayError
         s.relayError = relay.lastError
+        val alreadyReported = relay.lastError != null && relay.lastError == s.resultError
+        if (relay.lastError != previous) s.resultError = null
         _state.update { cur ->
             val error = when {
-                relay.lastError != previous && relay.lastError != null -> relay.lastError
+                alreadyReported -> cur.lastError
+                relay.lastError != previous && relay.lastError != null -> relay.lastError.also { s.mirroredError = it }
                 relay.lastError == null && previous != null && cur.lastError == previous -> null
                 else -> cur.lastError
             }
@@ -394,7 +401,14 @@ class RemoteCamera(
                 }
             if (result == null) return false
             if (!result.ok && result.error != null) {
-                publish(s) { _state.update { it.copy(lastError = result.error) } }
+                publish(s) {
+                    if (result.error == s.mirroredError) {
+                        s.mirroredError = null // just shown by the relay's state push
+                    } else {
+                        s.resultError = result.error
+                        _state.update { it.copy(lastError = result.error) }
+                    }
+                }
             }
             return result.ok
         } finally {
@@ -425,13 +439,14 @@ class RemoteCamera(
 
     private fun unconfirmed(label: String) = "$label$UNCONFIRMED_SUFFIX"
 
-    private companion object {
-        const val RETRY_DELAY_MS = 1000L
+    companion object {
+        private const val RETRY_DELAY_MS = 1000L
+        /** Suffix of the warning for a command whose result was lost with the link. */
         const val UNCONFIRMED_SUFFIX = " non confirmé — vérifie l'appareil"
         const val LINK_LOST = "Connexion au relais perdue"
-        const val UNREACHABLE = "Relais injoignable"
-        const val BUSY = "Relais occupé"
-        const val BLUETOOTH_LIVE_VIEW =
+        private const val UNREACHABLE = "Relais injoignable"
+        private const val BUSY = "Relais occupé"
+        private const val BLUETOOTH_LIVE_VIEW =
             "Le Bluetooth est trop lent pour le live view. Passe en Wi-Fi pour l'utiliser."
     }
 }
