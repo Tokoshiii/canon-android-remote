@@ -9,7 +9,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import dev.canonremote.core.TileModel
 
@@ -20,7 +19,7 @@ fun SettingTile(tile: TileModel, onClick: () -> Unit, modifier: Modifier = Modif
         enabled = tile.enabled,
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.elevatedCardColors(),
-        modifier = modifier.alpha(if (tile.enabled) 1f else 0.5f),
+        modifier = modifier,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text(tile.title, style = MaterialTheme.typography.labelMedium)

@@ -11,18 +11,24 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.canonremote.app.ui.camera.CameraScreen
 import dev.canonremote.core.CameraSetting
 import dev.canonremote.core.ControlsModel
 import dev.canonremote.core.FocusStep
+import kotlinx.coroutines.flow.Flow
 
 interface CameraActions {
     fun onSet(setting: CameraSetting, value: Int)
@@ -43,13 +49,17 @@ private val TABS = listOf(
 @Composable
 fun MainScreen(
     controls: ControlsModel,
-    frame: ByteArray?,
+    frame: ImageBitmap?,
+    errors: Flow<String>,
     actions: CameraActions,
     connection: @Composable () -> Unit,
     logs: @Composable () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(errors) { errors.collect { snackbar.showSnackbar(it) } }
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             NavigationBar {
                 TABS.forEachIndexed { index, item ->

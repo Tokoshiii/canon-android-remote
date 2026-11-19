@@ -18,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.unit.dp
 import dev.canonremote.app.ui.CameraActions
 import dev.canonremote.core.CameraSetting
@@ -26,12 +27,12 @@ import dev.canonremote.core.ControlsModel
 @Composable
 fun CameraScreen(
     controls: ControlsModel,
-    frame: ByteArray?,
+    frame: ImageBitmap?,
     actions: CameraActions,
     onStatusClick: () -> Unit,
 ) {
     var pickerFor by rememberSaveable { mutableStateOf<CameraSetting?>(null) }
-    val picked = controls.tiles.firstOrNull { it.setting == pickerFor }
+    val picked = controls.tiles.firstOrNull { it.setting == pickerFor && it.enabled }
 
     Column(
         Modifier
