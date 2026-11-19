@@ -5,8 +5,10 @@ import dev.canonremote.ptp.PtpContainer
 import dev.canonremote.ptp.PtpOp
 import dev.canonremote.ptp.PtpResponse
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -85,5 +87,27 @@ class PtpSessionTest {
         t.handler = { t.respond(it, data = byteArrayOf(1)) }
         s.execute(0x9116, logData = false)
         assertTrue(log.entries.value.any { it.message == "← DATA 1 o" })
+    }
+
+    @Test fun cancelledCallCompletesTransaction() = runBlocking {
+        var first = true
+        var firstFinished = false
+        t.handler = {
+            if (first) {
+                first = false
+                delay(50)
+                firstFinished = true
+                t.respond(it, data = byteArrayOf(1))
+            } else {
+                t.respond(it, data = byteArrayOf(2))
+            }
+        }
+        val job = launch { s.execute(0x9116) }
+        delay(10)
+        job.cancelAndJoin()
+        assertTrue("cancelled transaction must run to completion", firstFinished)
+        val r = s.execute(0x9116)
+        assertArrayEquals(byteArrayOf(2), r.data)
+        assertEquals(listOf(1, 2), t.sent.map { it.transactionId })
     }
 }
