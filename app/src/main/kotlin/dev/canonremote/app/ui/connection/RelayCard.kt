@@ -138,7 +138,7 @@ fun RelayCard(relay: RelayUiState, actions: ConnectionActions, permissions: Perm
                         modifier = Modifier.align(Alignment.CenterHorizontally),
                     )
                 }
-                Text(text = RelayLabels.client(relay.client), style = MaterialTheme.typography.bodyLarge)
+                Text(text = RelayLabels.client(relay), style = MaterialTheme.typography.bodyLarge)
             }
         }
     }

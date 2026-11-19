@@ -12,7 +12,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import dev.canonremote.app.CanonRemoteApp
 import dev.canonremote.app.MainActivity
-import dev.canonremote.core.remote.RelayClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,8 +40,8 @@ class RelayService : Service() {
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         scope.launch {
-            hub.relayState.map { it.client }.distinctUntilChanged().drop(1).collect { client ->
-                if (runtime != null) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(client))
+            hub.relayState.map { RelayLabels.notification(it) }.distinctUntilChanged().drop(1).collect { text ->
+                if (runtime != null) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
             }
         }
     }
@@ -59,7 +58,7 @@ class RelayService : Service() {
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
-                notification(state.client),
+                notification(RelayLabels.notification(state)),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
         } catch (e: Exception) {
@@ -81,14 +80,16 @@ class RelayService : Service() {
     }
 
     override fun onDestroy() {
+        val run = runtime?.pairingCode
         runtime?.release()
         runtime = null
         scope.cancel()
-        hub.stopRelay() // no-op unless the service was stopped by the system
+        // Stopped by the system: end this run, but never a newer one started meanwhile.
+        if (run != null && hub.relayState.value.pairingCode == run) hub.stopRelay()
         super.onDestroy()
     }
 
-    private fun notification(client: RelayClient?): Notification {
+    private fun notification(text: String): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -104,7 +105,7 @@ class RelayService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Relais actif")
-            .setContentText(RelayLabels.notification(client))
+            .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(open)

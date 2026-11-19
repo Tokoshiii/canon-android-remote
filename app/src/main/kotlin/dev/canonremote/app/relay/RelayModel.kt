@@ -5,7 +5,9 @@ import dev.canonremote.app.remote.QrPayload
 import dev.canonremote.app.remote.RELAY_WS_PORT
 import dev.canonremote.app.settings.AppMode
 import dev.canonremote.core.remote.RelayClient
+import java.security.SecureRandom
 import kotlin.random.Random
+import kotlin.random.asKotlinRandom
 
 /** Links a relay can offer to a remote. */
 enum class RelayLink(val label: String) {
@@ -25,8 +27,18 @@ data class RelayUiState(
     val hotspot: HotspotInfo? = null,
     val hotspotStarting: Boolean = false,
     val client: RelayClient? = null,
+    /** A remote was connected and its link dropped; cleared by the next client or a restart. */
+    val clientDropped: Boolean = false,
     val linkErrors: Map<RelayLink, String> = emptyMap(),
 ) {
+    /** The relay server's current client; ignored once the relay is stopped (late reports). */
+    fun withClient(newClient: RelayClient?): RelayUiState = when {
+        !running -> this
+        newClient != null -> copy(client = newClient, clientDropped = false)
+        client != null -> copy(client = null, clientDropped = true)
+        else -> this
+    }
+
     /** QR code content: only while the relay runs with its access point up. */
     val qrPayload: QrPayload?
         get() {
@@ -38,17 +50,23 @@ data class RelayUiState(
 }
 
 object PairingCode {
-    /** Random 6-digit code, leading zeros kept. */
-    fun generate(random: Random = Random.Default): String =
+    /** Random 6-digit code, leading zeros kept; a secure random source by default. */
+    fun generate(random: Random = SecureRandom().asKotlinRandom()): String =
         random.nextInt(0, 1_000_000).toString().padStart(6, '0')
 }
 
 object RelayLabels {
-    fun client(client: RelayClient?): String =
-        client?.let { "Télécommande connectée : ${it.name}" } ?: "En attente…"
+    fun client(state: RelayUiState): String = when {
+        state.client != null -> "Télécommande connectée : ${state.client.name}"
+        state.clientDropped -> "Télécommande déconnectée — en attente…"
+        else -> "En attente…"
+    }
 
-    fun notification(client: RelayClient?): String =
-        client?.let { "Télécommande : ${it.name}" } ?: "En attente d'une télécommande"
+    fun notification(state: RelayUiState): String = when {
+        state.client != null -> "Télécommande : ${state.client.name}"
+        state.clientDropped -> "Télécommande déconnectée"
+        else -> "En attente d'une télécommande"
+    }
 }
 
 /** Label of the status chip on the Appareil screen, e.g. « Télécommande • Canon EOS 90D ». */

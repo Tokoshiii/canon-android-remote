@@ -7,6 +7,7 @@ import dev.canonremote.core.remote.LinkKind
 import dev.canonremote.core.remote.RelayClient
 import kotlin.random.Random
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,10 +33,37 @@ class RelayModelTest {
 
     @Test
     fun clientLabels() {
-        assertEquals("En attente…", RelayLabels.client(null))
-        assertEquals("Télécommande connectée : Pixel 7", RelayLabels.client(RelayClient("Pixel 7", LinkKind.WIFI)))
-        assertEquals("En attente d'une télécommande", RelayLabels.notification(null))
-        assertEquals("Télécommande : Pixel 7", RelayLabels.notification(RelayClient("Pixel 7", LinkKind.BLUETOOTH)))
+        val idle = RelayUiState(running = true, pairingCode = "123456")
+        assertEquals("En attente…", RelayLabels.client(idle))
+        assertEquals("En attente d'une télécommande", RelayLabels.notification(idle))
+        val connected = idle.withClient(RelayClient("Pixel 7", LinkKind.WIFI))
+        assertEquals("Télécommande connectée : Pixel 7", RelayLabels.client(connected))
+        assertEquals("Télécommande : Pixel 7", RelayLabels.notification(connected))
+    }
+
+    @Test
+    fun droppedRemoteIsShownUntilNextClient() {
+        val connected = RelayUiState(running = true, pairingCode = "123456")
+            .withClient(RelayClient("Pixel 7", LinkKind.BLUETOOTH))
+        val dropped = connected.withClient(null)
+        assertTrue(dropped.clientDropped)
+        assertNull(dropped.client)
+        assertEquals("Télécommande déconnectée — en attente…", RelayLabels.client(dropped))
+        assertEquals("Télécommande déconnectée", RelayLabels.notification(dropped))
+        assertTrue(dropped.withClient(null).clientDropped)
+        val back = dropped.withClient(RelayClient("Pixel 7", LinkKind.WIFI))
+        assertFalse(back.clientDropped)
+        assertEquals("Télécommande connectée : Pixel 7", RelayLabels.client(back))
+        // no client yet: plain waiting
+        assertFalse(RelayUiState(running = true).withClient(null).clientDropped)
+        // a stopped relay ignores late reports
+        assertEquals(RelayUiState(), RelayUiState().withClient(RelayClient("Pixel 7", LinkKind.WIFI)))
+    }
+
+    @Test
+    fun defaultPairingCodeGeneratorWorks() {
+        val code = PairingCode.generate()
+        assertTrue(code, code.length == 6 && code.all { it.isDigit() })
     }
 
     @Test

@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -107,6 +108,9 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
 
     private val errorChannel = Channel<String>(Channel.BUFFERED)
 
+    /** Last error shown while it was kept in the camera state (see [drainError]). */
+    private var shownError: String? = null
+
     /** Errors of the active camera (each consumed once), for the snackbar. */
     val errors: Flow<String> = errorChannel.receiveAsFlow()
 
@@ -128,6 +132,8 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
     private var remoteJob: Job? = null
     private var joining = false
     private var remoteStatus = ConnectionStatus.DISCONNECTED
+    /** Bumped by each remote connect/disconnect. */
+    private var remoteGeneration = 0
 
     /** [joinHotspot] / [leaveHotspot] calls must not overlap. */
     private val hotspotJoinLock = Mutex()
@@ -142,13 +148,13 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 .collect { (cam, s) ->
                     if (cam is RemoteCamera && cam === _remote.value) {
                         tracker.onState(s.status, s.lastError)
+                        val gaveUp = s.status == ConnectionStatus.DISCONNECTED &&
+                            remoteStatus != ConnectionStatus.DISCONNECTED
                         remoteStatus = s.status
                         publishRemoteLink()
+                        if (gaveUp) releaseHotspotBinding()
                     }
-                    s.lastError?.let {
-                        errorChannel.trySend(it)
-                        cam.clearError()
-                    }
+                    drainError(cam, s.lastError)
                 }
         }
         scope.launch {
@@ -157,12 +163,42 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 .collect { s -> connector.markConnected(s.status == ConnectionStatus.CONNECTED) }
         }
         scope.launch {
+            // The remote has left: a USB camera error kept for it (see drainError) is cleared now.
+            _relay.map { it.running && it.client != null }.distinctUntilChanged().collect { attached ->
+                val cam = _usbCamera.value
+                if (!attached && cam != null && shownError != null && cam.state.value.lastError == shownError) {
+                    shownError = null
+                    cam.clearError()
+                }
+            }
+        }
+        scope.launch {
             connector.status.collect { status ->
                 if (status is UsbStatus.NoDevice && usbCameraStatus() != ConnectionStatus.DISCONNECTED) {
                     log.warn("Appareil USB débranché")
                     disconnectUsb()
                 }
             }
+        }
+    }
+
+    /**
+     * Shows each error once in the snackbar and clears it. Exception: while a remote drives the
+     * relay, the USB camera's error is left in place, since the relay mirrors it to the remote;
+     * it is then shown once and cleared later, when no remote is connected.
+     */
+    private fun drainError(cam: CameraController, error: String?) {
+        if (error == null) {
+            shownError = null
+            return
+        }
+        if (error != shownError) errorChannel.trySend(error)
+        val keep = cam === _usbCamera.value && _relay.value.let { it.running && it.client != null }
+        if (keep) {
+            shownError = error
+        } else {
+            shownError = null
+            cam.clearError()
         }
     }
 
@@ -229,7 +265,14 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         if (_relay.value.running) return
         val code = PairingCode.generate()
         _relay.update {
-            it.copy(running = true, pairingCode = code, client = null, hotspot = null, linkErrors = emptyMap())
+            it.copy(
+                running = true,
+                pairingCode = code,
+                client = null,
+                clientDropped = false,
+                hotspot = null,
+                linkErrors = emptyMap(),
+            )
         }
         log.info("Relais démarré")
         try {
@@ -247,7 +290,14 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         if (!_relay.value.running) return
         stopHotspot()
         _relay.update {
-            it.copy(running = false, pairingCode = null, client = null, hotspot = null, hotspotStarting = false)
+            it.copy(
+                running = false,
+                pairingCode = null,
+                client = null,
+                clientDropped = false,
+                hotspot = null,
+                hotspotStarting = false,
+            )
         }
         log.info("Relais arrêté")
         context.stopService(Intent(context, RelayService::class.java))
@@ -281,7 +331,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
 
     /** Called by the relay runtime (any thread). */
     internal fun reportClient(client: RelayClient?) {
-        _relay.update { if (it.running || client == null) it.copy(client = client) else it }
+        _relay.update { it.withClient(client) }
     }
 
     private fun startHotspot() {
@@ -336,6 +386,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         context.getSystemService(BluetoothManager::class.java)?.adapter
 
     fun connectRemote(target: RemoteTarget) {
+        remoteGeneration++
         remoteJob?.cancel()
         lastTarget = target
         tracker.reset()
@@ -398,6 +449,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
     }
 
     fun disconnectRemote() {
+        remoteGeneration++
         remoteJob?.cancel()
         remoteJob = null
         val rc = _remote.value
@@ -411,6 +463,19 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
             withContext(NonCancellable) {
                 rc?.disconnect()
                 hotspotJoinLock.withLock { leaveHotspot() }
+            }
+        }
+    }
+
+    /** The remote gave up reconnecting: unbind the process from the relay's access point. */
+    private fun releaseHotspotBinding() {
+        val target = lastTarget
+        if (joining || target !is RemoteTarget.Wifi || target.ssid == null) return
+        val gen = remoteGeneration
+        scope.launch {
+            hotspotJoinLock.withLock {
+                // Not if a new connection (« Se reconnecter ») was started meanwhile: it joins again.
+                if (gen == remoteGeneration) leaveHotspot()
             }
         }
     }

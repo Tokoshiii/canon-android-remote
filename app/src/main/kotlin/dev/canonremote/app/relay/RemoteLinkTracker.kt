@@ -2,9 +2,10 @@ package dev.canonremote.app.relay
 
 import dev.canonremote.core.ConnectionStatus
 import dev.canonremote.core.remote.LinkKind
+import dev.canonremote.core.remote.RemoteCamera
 
-const val LINK_LOST = "Connexion au relais perdue"
-private const val UNCONFIRMED_SUFFIX = " non confirmé — vérifie l'appareil"
+const val LINK_LOST = RemoteCamera.LINK_LOST
+private const val UNCONFIRMED_SUFFIX = RemoteCamera.UNCONFIRMED_SUFFIX
 
 /**
  * Remembers why the link to the relay failed, so the Connexion card keeps showing it after the
