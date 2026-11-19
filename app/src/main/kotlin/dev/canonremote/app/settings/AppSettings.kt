@@ -15,10 +15,22 @@ enum class ThemeMode(val key: String, val label: String) {
     }
 }
 
+/** How the app reaches the camera: USB, USB shared with a remote, or through a relay. */
+enum class AppMode(val key: String, val label: String) {
+    DIRECT("direct", "Direct"),
+    RELAY("relay", "Relais"),
+    REMOTE("remote", "Télécommande");
+
+    companion object {
+        fun fromKey(key: String?): AppMode = entries.firstOrNull { it.key == key } ?: DIRECT
+    }
+}
+
 data class UiPreferences(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
     val keepScreenOn: Boolean = false,
+    val mode: AppMode = AppMode.DIRECT,
 )
 
 /** Minimal persistent key-value storage, so the settings logic stays testable on the JVM. */
@@ -36,6 +48,7 @@ class AppSettings(private val store: KeyValueStore) {
             theme = ThemeMode.fromKey(store.getString(KEY_THEME)),
             dynamicColor = store.getBoolean(KEY_DYNAMIC_COLOR) ?: true,
             keepScreenOn = store.getBoolean(KEY_KEEP_SCREEN_ON) ?: false,
+            mode = AppMode.fromKey(store.getString(KEY_MODE)),
         ),
     )
     val preferences: StateFlow<UiPreferences> = state.asStateFlow()
@@ -55,9 +68,15 @@ class AppSettings(private val store: KeyValueStore) {
         state.update { it.copy(keepScreenOn = enabled) }
     }
 
+    fun setMode(mode: AppMode) {
+        store.putString(KEY_MODE, mode.key)
+        state.update { it.copy(mode = mode) }
+    }
+
     private companion object {
         const val KEY_THEME = "theme"
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
         const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
+        const val KEY_MODE = "mode"
     }
 }

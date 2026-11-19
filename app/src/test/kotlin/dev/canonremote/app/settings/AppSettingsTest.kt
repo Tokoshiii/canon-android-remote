@@ -20,6 +20,7 @@ class AppSettingsTest {
         assertEquals(ThemeMode.SYSTEM, prefs.theme)
         assertTrue(prefs.dynamicColor)
         assertFalse(prefs.keepScreenOn)
+        assertEquals(AppMode.DIRECT, prefs.mode)
     }
 
     @Test
@@ -29,7 +30,12 @@ class AppSettingsTest {
         settings.setTheme(ThemeMode.DARK)
         settings.setDynamicColor(false)
         settings.setKeepScreenOn(true)
-        assertEquals(UiPreferences(ThemeMode.DARK, dynamicColor = false, keepScreenOn = true), settings.preferences.value)
+        settings.setMode(AppMode.REMOTE)
+        assertEquals(
+            UiPreferences(ThemeMode.DARK, dynamicColor = false, keepScreenOn = true, mode = AppMode.REMOTE),
+            settings.preferences.value,
+        )
+        assertEquals("remote", store.values["mode"])
         assertEquals(settings.preferences.value, AppSettings(store).preferences.value)
     }
 
@@ -37,5 +43,19 @@ class AppSettingsTest {
     fun unknownStoredThemeFallsBackToSystem() {
         val store = MemoryStore().apply { values["theme"] = "violet" }
         assertEquals(ThemeMode.SYSTEM, AppSettings(store).preferences.value.theme)
+    }
+
+    @Test
+    fun modeIsStoredUnderModeKey() {
+        val store = MemoryStore()
+        AppSettings(store).setMode(AppMode.RELAY)
+        assertEquals("relay", store.values["mode"])
+        assertEquals(AppMode.RELAY, AppSettings(store).preferences.value.mode)
+    }
+
+    @Test
+    fun unknownStoredModeFallsBackToDirect() {
+        val store = MemoryStore().apply { values["mode"] = "teleport" }
+        assertEquals(AppMode.DIRECT, AppSettings(store).preferences.value.mode)
     }
 }
