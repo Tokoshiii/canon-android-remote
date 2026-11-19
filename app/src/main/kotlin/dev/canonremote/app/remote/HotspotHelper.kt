@@ -38,18 +38,34 @@ class RelayHotspot(context: Context) {
     /**
      * Starts the hotspot (stopping a previous one) and returns its credentials and the relay's
      * IPv4 address on it. Throws [SecurityException] when the permission is missing and
-     * [IllegalStateException] when the hotspot can't be started.
+     * [IllegalStateException] when the hotspot can't be started. [onSystemStop] is called (main
+     * thread) if the system stops this hotspot later (tethering switched on, Wi-Fi toggled…), never
+     * after [stop].
      */
     @SuppressLint("MissingPermission")
-    suspend fun start(): HotspotInfo {
+    suspend fun start(onSystemStop: () -> Unit = {}): HotspotInfo {
         stop()
         val res = suspendCancellableCoroutine<WifiManager.LocalOnlyHotspotReservation> { cont ->
             val callback = object : WifiManager.LocalOnlyHotspotCallback() {
+                private var started: WifiManager.LocalOnlyHotspotReservation? = null
+
                 override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
                     if (cont.isActive) {
+                        started = reservation
                         cont.resume(reservation) { _, value, _ -> value.close() }
                     } else {
                         reservation.close()
+                    }
+                }
+
+                override fun onStopped() {
+                    val mine = started ?: return
+                    val current = synchronized(this@RelayHotspot) {
+                        (reservation === mine).also { if (it) reservation = null }
+                    }
+                    if (current) {
+                        runCatching { mine.close() }
+                        onSystemStop()
                     }
                 }
 
@@ -158,7 +174,9 @@ private var joined: Pair<ConnectivityManager, ConnectivityManager.NetworkCallbac
  * Joins the relay's hotspot with a [WifiNetworkSpecifier] (the system asks the user to confirm),
  * then binds the whole process to it with [ConnectivityManager.bindProcessToNetwork] so that
  * [connectWebSocket] (Ktor CIO) goes through it. Suspends until the network is available; throws
- * [IllegalStateException] after 30 s. Call [leaveHotspot] when done.
+ * [IllegalStateException] after 30 s. Until [leaveHotspot], the request stays registered: the
+ * process is unbound when the network is lost and bound again to the network that replaces it
+ * (out of range then back), so the remote's automatic reconnection works.
  *
  * Calls must be serialized (one join at a time): a new call first leaves the previous hotspot, and
  * the single process-wide binding/callback is shared with [leaveHotspot].
@@ -177,8 +195,26 @@ suspend fun joinHotspot(context: Context, ssid: String, password: String): Netwo
         .build()
     val available = CompletableDeferred<Network>()
     val callback = object : ConnectivityManager.NetworkCallback() {
+        /** Network the process is bound to by this request. */
+        private var bound: Network? = null
+
+        // Every onAvailable binds: after a range loss, the hotspot coming back is a new Network.
         override fun onAvailable(network: Network) {
-            available.complete(network)
+            val ok = synchronized(joinLock) {
+                if (joined?.second !== this) return // left meanwhile
+                bound = network
+                cm.bindProcessToNetwork(network)
+            }
+            if (ok) available.complete(network) else available.completeExceptionally(IllegalStateException(JOIN_FAILED))
+        }
+
+        // Unbound at once: connections fail fast instead of going to a dead network.
+        override fun onLost(network: Network) {
+            synchronized(joinLock) {
+                if (joined?.second !== this || bound != network) return
+                bound = null
+                cm.bindProcessToNetwork(null)
+            }
         }
 
         override fun onUnavailable() {
@@ -188,10 +224,8 @@ suspend fun joinHotspot(context: Context, ssid: String, password: String): Netwo
     synchronized(joinLock) { joined = cm to callback }
     try {
         cm.requestNetwork(request, callback, JOIN_TIMEOUT_MS)
-        val network = withTimeoutOrNull(JOIN_TIMEOUT_MS + 1_000L) { available.await() }
+        return withTimeoutOrNull(JOIN_TIMEOUT_MS + 1_000L) { available.await() }
             ?: throw IllegalStateException(JOIN_FAILED)
-        if (!cm.bindProcessToNetwork(network)) throw IllegalStateException(JOIN_FAILED)
-        return network
     } catch (e: CancellationException) {
         leaveHotspot()
         throw e

@@ -53,6 +53,7 @@ private const val NOT_A_RELAY_QR = "Ce QR code n'est pas celui d'un relais Canon
 fun RemotePanel(link: RemoteLinkUi, actions: ConnectionActions, permissions: PermissionRequester) {
     val context = LocalContext.current
     var codeFor by remember { mutableStateOf<DiscoveredRelay?>(null) }
+    var askCodeAgain by remember { mutableStateOf(false) }
 
     fun connectPayload(payload: QrPayload) {
         val target = RemoteTarget.Wifi(
@@ -71,7 +72,11 @@ fun RemotePanel(link: RemoteLinkUi, actions: ConnectionActions, permissions: Per
         }
     }
 
-    LinkStatusCard(link = link, onReconnect = actions::reconnectRemote, onDisconnect = actions::disconnectRemote)
+    LinkStatusCard(
+        link = link,
+        onReconnect = { if (link.asksCode) askCodeAgain = true else actions.reconnectRemote() },
+        onDisconnect = actions::disconnectRemote,
+    )
     WifiRelaysCard(actions = actions, onPick = { codeFor = it })
     Button(
         onClick = {
@@ -89,12 +94,22 @@ fun RemotePanel(link: RemoteLinkUi, actions: ConnectionActions, permissions: Per
 
     codeFor?.let { relay ->
         CodeDialog(
-            relay = relay,
+            title = relay.name,
             onConnect = { code ->
                 codeFor = null
                 actions.connectRemote(RemoteTarget.Wifi(host = relay.host, port = relay.port, code = code))
             },
             onDismiss = { codeFor = null },
+        )
+    }
+    if (askCodeAgain) {
+        CodeDialog(
+            title = "Code d'appairage incorrect",
+            onConnect = { code ->
+                askCodeAgain = false
+                actions.reconnectRemoteWithCode(code)
+            },
+            onDismiss = { askCodeAgain = false },
         )
     }
 }
@@ -125,9 +140,9 @@ private fun LinkStatusCard(link: RemoteLinkUi, onReconnect: () -> Unit, onDiscon
                 color = if (link.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
             )
             link.detail?.let { Text(text = it, style = MaterialTheme.typography.bodySmall) }
-            if (link.canReconnect || link.canDisconnect) {
+            if (link.canReconnect || link.asksCode || link.canDisconnect) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (link.canReconnect) Button(onClick = onReconnect) { Text(text = "Se reconnecter") }
+                    if (link.canReconnect || link.asksCode) Button(onClick = onReconnect) { Text(text = "Se reconnecter") }
                     if (link.canDisconnect) OutlinedButton(onClick = onDisconnect) { Text(text = "Déconnecter") }
                 }
             }
@@ -248,11 +263,11 @@ private fun BluetoothRelaysCard(actions: ConnectionActions, permissions: Permiss
 }
 
 @Composable
-private fun CodeDialog(relay: DiscoveredRelay, onConnect: (String) -> Unit, onDismiss: () -> Unit) {
+private fun CodeDialog(title: String, onConnect: (String) -> Unit, onDismiss: () -> Unit) {
     var code by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = relay.name) },
+        title = { Text(text = title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = "Saisis le code d'appairage à 6 chiffres affiché sur le relais.")

@@ -47,8 +47,10 @@ interface ConnectionActions {
     fun stopRelay()
     fun setRelayLink(link: RelayLink, enabled: Boolean)
     fun restartBluetoothLink()
+    fun restartHotspot()
     fun connectRemote(target: RemoteTarget)
     fun reconnectRemote()
+    fun reconnectRemoteWithCode(code: String)
     fun disconnectRemote()
     fun discoverRelays(): Flow<RelayDiscovery>
     fun bluetoothAdapter(): BluetoothAdapter?

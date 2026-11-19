@@ -90,9 +90,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     override fun restartBluetoothLink() = hub.restartBluetoothLink()
 
+    override fun restartHotspot() = hub.restartHotspot()
+
     override fun connectRemote(target: RemoteTarget) = hub.connectRemote(target)
 
     override fun reconnectRemote() = hub.reconnectRemote()
+
+    override fun reconnectRemoteWithCode(code: String) = hub.reconnectRemoteWithCode(code)
 
     override fun disconnectRemote() = hub.disconnectRemote()
 

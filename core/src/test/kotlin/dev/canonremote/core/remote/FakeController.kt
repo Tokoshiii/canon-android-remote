@@ -17,6 +17,8 @@ class FakeController(initial: CameraState = CameraState()) : CameraController {
     override val liveViewFrames = MutableStateFlow<ByteArray?>(null)
 
     val calls: MutableList<String> = CopyOnWriteArrayList()
+    /** Calls that ran to their end (after [commandDelayMs]). */
+    val finished: MutableList<String> = CopyOnWriteArrayList()
     @Volatile var result: Boolean = true
     @Volatile var failure: Throwable? = null
     @Volatile var commandDelayMs: Long = 0
@@ -26,6 +28,7 @@ class FakeController(initial: CameraState = CameraState()) : CameraController {
     private suspend fun run(call: String): Boolean {
         calls += call
         if (commandDelayMs > 0) delay(commandDelayMs)
+        finished += call
         failure?.let { throw it }
         if (!result) errorOnFalse?.let { e -> state.value = state.value.copy(lastError = e) }
         return result

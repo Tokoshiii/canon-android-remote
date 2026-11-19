@@ -107,6 +107,9 @@ fun RelayCard(relay: RelayUiState, actions: ConnectionActions, permissions: Perm
                         if (link == RelayLink.BLUETOOTH && relay.running) {
                             TextButton(onClick = actions::restartBluetoothLink) { Text(text = "Relancer") }
                         }
+                        if (link == RelayLink.HOTSPOT && relay.running && link in relay.links && !relay.hotspotStarting) {
+                            TextButton(onClick = actions::restartHotspot) { Text(text = "Relancer") }
+                        }
                     }
                 }
             }

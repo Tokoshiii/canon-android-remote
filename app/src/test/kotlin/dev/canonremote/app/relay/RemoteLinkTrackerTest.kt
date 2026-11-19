@@ -2,6 +2,7 @@ package dev.canonremote.app.relay
 
 import dev.canonremote.core.ConnectionStatus
 import dev.canonremote.core.remote.LinkKind
+import dev.canonremote.core.remote.LinkState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -11,101 +12,130 @@ import org.junit.Test
 class RemoteLinkTrackerTest {
     private val tracker = RemoteLinkTracker()
 
+    private fun ui(
+        link: LinkState,
+        camera: ConnectionStatus = ConnectionStatus.CONNECTED,
+        kind: LinkKind = LinkKind.WIFI,
+        joinFailure: String? = null,
+    ) = remoteLinkUi(link = link, camera = camera, kind = kind, joinFailure = joinFailure)
+
     @Test
     fun connectedShowsLink() {
-        tracker.onState(ConnectionStatus.CONNECTING, null)
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        val wifi = remoteLinkUi(ConnectionStatus.CONNECTED, LinkKind.WIFI, tracker.failure)
+        val wifi = ui(LinkState.Connected)
         assertEquals("Connecté via Wi-Fi", wifi.title)
+        assertNull(wifi.detail)
         assertFalse(wifi.isError)
         assertTrue(wifi.canDisconnect)
         assertFalse(wifi.canReconnect)
-        assertEquals("Connecté via Bluetooth", remoteLinkUi(ConnectionStatus.CONNECTED, LinkKind.BLUETOOTH, null).title)
+        assertEquals("Connecté via Bluetooth", ui(LinkState.Connected, kind = LinkKind.BLUETOOTH).title)
+    }
+
+    @Test
+    fun relayWithoutCameraIsConnectedNotLost() {
+        val noCamera = ui(LinkState.Connected, camera = ConnectionStatus.DISCONNECTED)
+        assertEquals("Relais connecté — appareil non branché sur le relais", noCamera.title)
+        assertEquals("Via Wi-Fi", noCamera.detail)
+        assertFalse(noCamera.isError)
+        assertFalse(noCamera.canReconnect)
+        assertTrue(noCamera.canDisconnect)
+        val opening = ui(LinkState.Connected, camera = ConnectionStatus.CONNECTING, kind = LinkKind.BLUETOOTH)
+        assertEquals("Relais connecté — connexion à l'appareil sur le relais…", opening.title)
+        assertEquals("Via Bluetooth", opening.detail)
+        assertFalse(opening.isError)
+    }
+
+    @Test
+    fun relayCameraUnpluggedDoesNotEndTheLink() {
+        assertFalse(tracker.onLink(LinkState.Connecting))
+        assertFalse(tracker.onLink(LinkState.Connected))
+        // the relay camera going DISCONNECTED does not change the link state at all
+        assertFalse(tracker.onLink(LinkState.Connected))
     }
 
     @Test
     fun lostLinkWhileReconnecting() {
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        tracker.onState(ConnectionStatus.CONNECTING, "Connexion au relais perdue")
-        tracker.onState(ConnectionStatus.CONNECTING, null) // error drained by the snackbar
-        assertEquals("Connexion au relais perdue", tracker.failure)
-        val ui = remoteLinkUi(ConnectionStatus.CONNECTING, LinkKind.WIFI, tracker.failure)
+        val ui = ui(LinkState.Reconnecting, camera = ConnectionStatus.CONNECTING)
         assertEquals("Connexion au relais perdue", ui.title)
         assertEquals("Reconnexion automatique…", ui.detail)
         assertTrue(ui.isError)
         assertFalse(ui.canReconnect)
-    }
-
-    @Test
-    fun lostLinkDetectedEvenIfErrorWasConflatedAway() {
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        tracker.onState(ConnectionStatus.CONNECTING, null)
-        assertEquals("Connexion au relais perdue", tracker.failure)
-    }
-
-    @Test
-    fun unconfirmedCommandCountsAsLinkLoss() {
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        tracker.onState(ConnectionStatus.CONNECTING, "Déclenchement non confirmé — vérifie l'appareil")
-        assertEquals("Connexion au relais perdue", tracker.failure)
-    }
-
-    @Test
-    fun givingUpOffersReconnect() {
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        tracker.onState(ConnectionStatus.CONNECTING, "Connexion au relais perdue")
-        tracker.onState(ConnectionStatus.DISCONNECTED, "Connexion au relais perdue")
-        tracker.onState(ConnectionStatus.DISCONNECTED, null)
-        val ui = remoteLinkUi(ConnectionStatus.DISCONNECTED, LinkKind.WIFI, tracker.failure)
-        assertEquals("Connexion au relais perdue", ui.title)
-        assertNull(ui.detail)
-        assertTrue(ui.isError)
-        assertTrue(ui.canReconnect)
         assertTrue(ui.canDisconnect)
     }
 
     @Test
-    fun rejectionIsShown() {
-        tracker.onState(ConnectionStatus.CONNECTING, null)
-        tracker.onState(ConnectionStatus.DISCONNECTED, "Code d'appairage incorrect")
-        tracker.onState(ConnectionStatus.DISCONNECTED, null)
-        assertEquals("Code d'appairage incorrect", tracker.failure)
+    fun givingUpOffersReconnect() {
+        val ui = ui(LinkState.GaveUp, camera = ConnectionStatus.DISCONNECTED)
+        assertEquals("Connexion au relais perdue", ui.title)
+        assertNull(ui.detail)
+        assertTrue(ui.isError)
+        assertTrue(ui.canReconnect)
+        assertFalse(ui.asksCode)
+        assertTrue(ui.canDisconnect)
     }
 
     @Test
-    fun commandErrorsWhileConnectedAreNotLinkFailures() {
-        tracker.onState(ConnectionStatus.CONNECTED, "Réglage refusé")
-        assertNull(tracker.failure)
-    }
-
-    @Test
-    fun reconnectionClearsFailure() {
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        tracker.onState(ConnectionStatus.CONNECTING, "Connexion au relais perdue")
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        assertNull(tracker.failure)
-        tracker.onState(ConnectionStatus.DISCONNECTED, "Relais injoignable")
+    fun linkEndsOnceOnGiveUpRejectionOrUnreachable() {
+        tracker.onLink(LinkState.Connected)
+        assertFalse(tracker.onLink(LinkState.Reconnecting))
+        assertTrue(tracker.onLink(LinkState.GaveUp))
+        assertFalse("reported once", tracker.onLink(LinkState.GaveUp))
         tracker.reset()
-        assertNull(tracker.failure)
+        assertTrue("conflated Connecting", tracker.onLink(LinkState.Unreachable))
+        tracker.reset()
+        tracker.onLink(LinkState.Connecting)
+        assertTrue(tracker.onLink(LinkState.Rejected("Relais occupé")))
+        tracker.reset()
+        assertFalse(tracker.onLink(LinkState.Idle))
+    }
+
+    @Test
+    fun wrongCodeAsksForTheCodeAgain() {
+        val ui = ui(LinkState.Rejected("Code d'appairage incorrect"), camera = ConnectionStatus.DISCONNECTED)
+        assertEquals("Code d'appairage incorrect", ui.title)
+        assertTrue(ui.isError)
+        assertFalse("never replays the wrong code", ui.canReconnect)
+        assertTrue(ui.asksCode)
+        assertTrue(ui.canDisconnect)
+    }
+
+    @Test
+    fun otherRejectionsAndUnreachableOfferReconnect() {
+        val busy = ui(LinkState.Rejected("Relais occupé"), camera = ConnectionStatus.DISCONNECTED)
+        assertEquals("Relais occupé", busy.title)
+        assertTrue(busy.canReconnect)
+        assertFalse(busy.asksCode)
+        val unreachable = ui(LinkState.Unreachable, camera = ConnectionStatus.DISCONNECTED)
+        assertEquals("Relais injoignable", unreachable.title)
+        assertTrue(unreachable.isError)
+        assertTrue(unreachable.canReconnect)
     }
 
     @Test
     fun idleAndConnecting() {
-        val idle = remoteLinkUi(ConnectionStatus.DISCONNECTED, LinkKind.WIFI, null)
+        val idle = ui(LinkState.Idle, camera = ConnectionStatus.DISCONNECTED)
         assertEquals("Non connecté", idle.title)
         assertFalse(idle.isError)
         assertFalse(idle.canDisconnect)
-        val connecting = remoteLinkUi(ConnectionStatus.CONNECTING, LinkKind.BLUETOOTH, null)
+        assertFalse(idle.canReconnect)
+        val connecting = ui(LinkState.Connecting, camera = ConnectionStatus.CONNECTING, kind = LinkKind.BLUETOOTH)
         assertEquals("Connexion au relais…", connecting.title)
+        assertFalse(connecting.isError)
         assertTrue(connecting.canDisconnect)
     }
 
     @Test
-    fun externalFailureIsKeptUntilConnected() {
-        tracker.onFailure("Impossible de rejoindre le point d'accès du relais")
-        tracker.onState(ConnectionStatus.DISCONNECTED, null)
-        assertEquals("Impossible de rejoindre le point d'accès du relais", tracker.failure)
-        tracker.onState(ConnectionStatus.CONNECTED, null)
-        assertNull(tracker.failure)
+    fun joinFailureIsShownUntilConnected() {
+        tracker.onJoinFailure("Impossible de rejoindre le point d'accès du relais")
+        assertEquals("Impossible de rejoindre le point d'accès du relais", tracker.joinFailure)
+        val failed = ui(LinkState.Idle, camera = ConnectionStatus.DISCONNECTED, joinFailure = tracker.joinFailure)
+        assertEquals("Impossible de rejoindre le point d'accès du relais", failed.title)
+        assertTrue(failed.isError)
+        assertTrue(failed.canReconnect)
+        assertTrue(failed.canDisconnect)
+        tracker.onLink(LinkState.Connected)
+        assertNull(tracker.joinFailure)
+        tracker.onJoinFailure("x")
+        tracker.reset()
+        assertNull(tracker.joinFailure)
     }
 }

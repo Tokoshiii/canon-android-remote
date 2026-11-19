@@ -9,7 +9,10 @@ import dev.canonremote.core.LogLevel
 import dev.canonremote.core.SettingState
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -408,6 +411,25 @@ class RelayServerTest {
             second.messages,
         )
         assertEquals(RelayClient("Pixel", LinkKind.WIFI), h.server.clients.value)
+    }
+
+    @Test fun stoppingTheRelayLetsTheRunningCommandFinish() = runTest {
+        // A shoot cut in the middle could leave the shutter button half pressed on the camera.
+        val camera = FakeController(camState)
+        val relayScope = CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
+        val server = RelayServer(camera, LogBus(), relayScope, CODE)
+        val (relayEnd, remoteEnd) = MemoryChannel.pair()
+        backgroundScope.launch { runCatching { remoteEnd.incoming.collect { } } }
+        server.accept(relayEnd, LinkKind.WIFI)
+        remoteEnd.send(Message.Hello(1, CODE, "Pixel"))
+        runCurrent()
+        camera.commandDelayMs = 3000
+        remoteEnd.send(Message.Command(1, Action.Shoot))
+        runCurrent()
+        assertEquals(listOf("shoot"), camera.calls)
+        relayScope.cancel()
+        advanceTimeBy(3001)
+        assertEquals(listOf("shoot"), camera.finished)
     }
 
     private companion object { const val CODE = "123456" }

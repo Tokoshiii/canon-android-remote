@@ -5,6 +5,7 @@ import dev.canonremote.core.LogBus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class LinkKind { WIFI, BLUETOOTH }
 
@@ -172,12 +174,16 @@ class RelayServer(
             if (action is Action.LiveView && action.on && link == LinkKind.BLUETOOTH) {
                 Message.Result(cmd.id, false, "Live view indisponible en Bluetooth")
             } else {
-                val ok = when (action) {
-                    is Action.Set -> camera.set(action.setting, action.value)
-                    Action.Shoot -> camera.shoot()
-                    Action.Autofocus -> camera.autofocus()
-                    is Action.Focus -> camera.focus(action.step)
-                    is Action.LiveView -> camera.setLiveView(action.on)
+                // Not cut by the relay stopping: a shoot interrupted midway could leave the shutter
+                // half pressed. Each camera call is bounded by its own PTP timeouts.
+                val ok = withContext(NonCancellable) {
+                    when (action) {
+                        is Action.Set -> camera.set(action.setting, action.value)
+                        Action.Shoot -> camera.shoot()
+                        Action.Autofocus -> camera.autofocus()
+                        is Action.Focus -> camera.focus(action.step)
+                        is Action.LiveView -> camera.setLiveView(action.on)
+                    }
                 }
                 // The camera's error is captured now: the relay's own UI may clear it at any time.
                 Message.Result(cmd.id, ok, if (ok) null else currentError())
@@ -197,7 +203,8 @@ class RelayServer(
         }
     }
 
-    private companion object {
+    companion object {
+        /** Rejection reason for a wrong pairing code. */
         const val WRONG_CODE = "Code d'appairage incorrect"
     }
 

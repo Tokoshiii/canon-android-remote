@@ -31,6 +31,7 @@ import dev.canonremote.core.CanonCamera
 import dev.canonremote.core.ConnectionStatus
 import dev.canonremote.core.LogBus
 import dev.canonremote.core.remote.LinkKind
+import dev.canonremote.core.remote.LinkState
 import dev.canonremote.core.remote.RelayClient
 import dev.canonremote.core.remote.RemoteCamera
 import kotlinx.coroutines.CancellationException
@@ -60,6 +61,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+
+internal const val HOTSPOT_STOPPED = "Point d'accès arrêté par le système"
 
 /** Where the remote connects to. */
 sealed interface RemoteTarget {
@@ -106,7 +109,11 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         if (m == AppMode.REMOTE) remote else usb
     }.stateIn(scope, SharingStarted.Eagerly, if (mode.value == AppMode.REMOTE) null else _usbCamera.value)
 
-    private val errorChannel = Channel<String>(Channel.BUFFERED)
+    /**
+     * Conflated: while the relay runs without any UI, only the latest error waits for the snackbar
+     * (no pile of stale ones replayed on return, no later error dropped).
+     */
+    private val errorChannel = Channel<String>(Channel.CONFLATED)
 
     /** Last error shown while it was kept in the camera state (see [drainError]). */
     private var shownError: String? = null
@@ -126,12 +133,17 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
     private var hotspotJob: Job? = null
 
     private val tracker = RemoteLinkTracker()
-    private val _remoteLink = MutableStateFlow(remoteLinkUi(ConnectionStatus.DISCONNECTED, LinkKind.WIFI, null))
+    private val _remoteLink = MutableStateFlow(
+        remoteLinkUi(link = LinkState.Idle, camera = ConnectionStatus.DISCONNECTED, kind = LinkKind.WIFI, joinFailure = null),
+    )
     val remoteLink: StateFlow<RemoteLinkUi> = _remoteLink.asStateFlow()
     private var lastTarget: RemoteTarget? = null
     private var remoteJob: Job? = null
     private var joining = false
-    private var remoteStatus = ConnectionStatus.DISCONNECTED
+    /** Link of the current remote to its relay (not the relay camera's status). */
+    private var remoteLinkState: LinkState = LinkState.Idle
+    /** The relay camera's status as mirrored by the current remote. */
+    private var remoteCameraStatus = ConnectionStatus.DISCONNECTED
     /** Bumped by each remote connect/disconnect. */
     private var remoteGeneration = 0
 
@@ -146,15 +158,23 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
             activeCamera
                 .flatMapLatest { cam -> cam?.state?.map { cam to it } ?: emptyFlow() }
                 .collect { (cam, s) ->
-                    if (cam is RemoteCamera && cam === _remote.value) {
-                        tracker.onState(s.status, s.lastError)
-                        val gaveUp = s.status == ConnectionStatus.DISCONNECTED &&
-                            remoteStatus != ConnectionStatus.DISCONNECTED
-                        remoteStatus = s.status
+                    if (cam is RemoteCamera && cam === _remote.value && s.status != remoteCameraStatus) {
+                        remoteCameraStatus = s.status
                         publishRemoteLink()
-                        if (gaveUp) releaseHotspotBinding()
                     }
                     drainError(cam, s.lastError)
+                }
+        }
+        scope.launch {
+            // The link alone (a relay without camera is still linked): drives the card and the hotspot.
+            _remote
+                .flatMapLatest { rc -> rc?.linkState?.map { rc to it } ?: emptyFlow() }
+                .collect { (rc, link) ->
+                    if (rc !== _remote.value) return@collect
+                    remoteLinkState = link
+                    val ended = tracker.onLink(link)
+                    publishRemoteLink()
+                    if (ended) releaseHotspotBinding()
                 }
         }
         scope.launch {
@@ -339,7 +359,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         _relay.update { it.copy(hotspot = null, hotspotStarting = true) }
         val job = scope.launch {
             try {
-                val info = hotspot.start()
+                val info = hotspot.start(onSystemStop = ::onHotspotStoppedBySystem)
                 val wanted = _relay.value.let { it.running && RelayLink.HOTSPOT in it.links }
                 if (wanted) {
                     log.info("Point d'accès du relais : ${info.ssid} (${info.hostIp})")
@@ -366,6 +386,20 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 }
             }
         }
+    }
+
+    /** Main thread. The QR code is withdrawn; « Relancer » starts the access point again. */
+    private fun onHotspotStoppedBySystem() {
+        log.warn("Point d'accès du relais arrêté par le système")
+        _relay.update {
+            it.copy(hotspot = null, linkErrors = it.linkErrors + (RelayLink.HOTSPOT to HOTSPOT_STOPPED))
+        }
+    }
+
+    /** « Relancer » under the access point link (UI action). */
+    fun restartHotspot() {
+        _relay.update { it.copy(linkErrors = it.linkErrors - RelayLink.HOTSPOT) }
+        if (_relay.value.let { it.running && RelayLink.HOTSPOT in it.links }) startHotspot()
     }
 
     private fun stopHotspot() {
@@ -412,7 +446,8 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         }
         val needsJoin = target is RemoteTarget.Wifi && target.ssid != null
         joining = needsJoin
-        remoteStatus = ConnectionStatus.DISCONNECTED
+        remoteLinkState = LinkState.Idle
+        remoteCameraStatus = ConnectionStatus.DISCONNECTED
         _remote.value = rc
         publishRemoteLink(link)
         remoteJob = scope.launch {
@@ -432,7 +467,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 val message = e.message ?: "Impossible de rejoindre le point d'accès du relais"
                 log.warn(message)
                 joining = false
-                tracker.onFailure(message)
+                tracker.onJoinFailure(message)
                 publishRemoteLink(link)
                 errorChannel.trySend(message)
                 return@launch
@@ -448,6 +483,12 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         lastTarget?.let(::connectRemote)
     }
 
+    /** « Se reconnecter » after a wrong pairing code: same relay with the code typed again. */
+    fun reconnectRemoteWithCode(code: String) {
+        val target = lastTarget as? RemoteTarget.Wifi ?: return
+        connectRemote(target.copy(code = code))
+    }
+
     fun disconnectRemote() {
         remoteGeneration++
         remoteJob?.cancel()
@@ -457,7 +498,8 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         lastTarget = null
         joining = false
         tracker.reset()
-        remoteStatus = ConnectionStatus.DISCONNECTED
+        remoteLinkState = LinkState.Idle
+        remoteCameraStatus = ConnectionStatus.DISCONNECTED
         publishRemoteLink()
         scope.launch {
             withContext(NonCancellable) {
@@ -467,7 +509,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         }
     }
 
-    /** The remote gave up reconnecting: unbind the process from the relay's access point. */
+    /** The link ended for good (gave up, rejected, unreachable): unbind from the relay's access point. */
     private fun releaseHotspotBinding() {
         val target = lastTarget
         if (joining || target !is RemoteTarget.Wifi || target.ssid == null) return
@@ -490,7 +532,7 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 canDisconnect = true,
             )
         } else {
-            remoteLinkUi(remoteStatus, link, tracker.failure)
+            remoteLinkUi(link = remoteLinkState, camera = remoteCameraStatus, kind = link, joinFailure = tracker.joinFailure)
         }
     }
 }

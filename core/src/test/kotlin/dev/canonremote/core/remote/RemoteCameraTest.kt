@@ -650,5 +650,107 @@ class RemoteCameraTest {
         assertEquals("Relais injoignable", remote.state.value.lastError)
     }
 
+    // ---- link state (separate from the relay camera's status) ----
+
+    @Test fun linkStateFollowsConnectAndDisconnect() = runTest {
+        val h = EndToEnd(this)
+        assertEquals(LinkState.Idle, h.remote.linkState.value)
+        h.remote.connect()
+        runCurrent()
+        assertEquals(LinkState.Connected, h.remote.linkState.value)
+        h.remote.disconnect()
+        assertEquals(LinkState.Idle, h.remote.linkState.value)
+    }
+
+    @Test fun linkConnectingUntilWelcome() = runTest {
+        val h = Scripted(this)
+        h.onHello = { _, _ -> }
+        val job = async { h.remote.connect() }
+        advanceTimeBy(1000)
+        assertEquals(LinkState.Connecting, h.remote.linkState.value)
+        advanceTimeBy(6000)
+        job.await()
+        assertEquals(LinkState.Unreachable, h.remote.linkState.value)
+    }
+
+    @Test fun relayWithoutCameraKeepsLinkConnected() = runTest {
+        val h = EndToEnd(this)
+        h.camera.state.value = CameraState()
+        h.remote.connect()
+        runCurrent()
+        assertEquals(ConnectionStatus.DISCONNECTED, h.remote.state.value.status)
+        assertEquals(LinkState.Connected, h.remote.linkState.value)
+        // camera unplugged, then plugged back on the relay: the link never moves
+        h.camera.state.value = camState
+        runCurrent()
+        h.camera.state.value = CameraState(status = ConnectionStatus.CONNECTING)
+        runCurrent()
+        assertEquals(ConnectionStatus.CONNECTING, h.remote.state.value.status)
+        assertEquals(LinkState.Connected, h.remote.linkState.value)
+        h.camera.state.value = CameraState(lastError = "Appareil déconnecté")
+        advanceTimeBy(20_000)
+        assertEquals(LinkState.Connected, h.remote.linkState.value)
+        assertEquals(1, h.attempts.get())
+    }
+
+    @Test fun linkLossReconnectsThenGivesUp() = runTest {
+        val h = EndToEnd(this)
+        h.remote.connect()
+        runCurrent()
+        h.reachable = false
+        h.channels.last().fail(IOException("Wi-Fi coupé"))
+        runCurrent()
+        assertEquals(LinkState.Reconnecting, h.remote.linkState.value)
+        advanceTimeBy(16_000)
+        assertEquals(LinkState.GaveUp, h.remote.linkState.value)
+    }
+
+    @Test fun linkReconnectedWithinWindow() = runTest {
+        val h = EndToEnd(this)
+        h.remote.connect()
+        runCurrent()
+        h.reachable = false
+        h.channels.last().fail(IOException("Wi-Fi coupé"))
+        advanceTimeBy(2000)
+        h.reachable = true
+        advanceTimeBy(1500)
+        assertEquals(LinkState.Connected, h.remote.linkState.value)
+    }
+
+    @Test fun linkLostShownOnceEvenAtGiveUp() = runTest {
+        val h = EndToEnd(this)
+        h.remote.connect()
+        runCurrent()
+        h.reachable = false
+        h.channels.last().fail(IOException("Wi-Fi coupé"))
+        runCurrent()
+        assertEquals("Connexion au relais perdue", h.remote.state.value.lastError)
+        h.remote.clearError() // shown by the snackbar
+        advanceTimeBy(16_000)
+        assertEquals(ConnectionStatus.DISCONNECTED, h.remote.state.value.status)
+        assertNull("not shown a second time", h.remote.state.value.lastError)
+    }
+
+    @Test fun linkRejectionsCarryTheReason() = runTest {
+        val h = EndToEnd(this, token = "000000")
+        h.remote.connect()
+        runCurrent()
+        assertEquals(LinkState.Rejected("Code d'appairage incorrect"), h.remote.linkState.value)
+        val u = EndToEnd(this)
+        u.reachable = false
+        u.remote.connect()
+        assertEquals(LinkState.Unreachable, u.remote.linkState.value)
+    }
+
+    @Test fun linkRejectedDuringReconnect() = runTest {
+        val h = Scripted(this)
+        h.remote.connect()
+        runCurrent()
+        h.onHello = { s, _ -> s.channel.send(Message.Rejected("Code d'appairage incorrect")) }
+        h.sessions.single().channel.close()
+        runCurrent()
+        assertEquals(LinkState.Rejected("Code d'appairage incorrect"), h.remote.linkState.value)
+    }
+
     private companion object { const val CODE = "123456" }
 }

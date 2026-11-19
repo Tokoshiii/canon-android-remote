@@ -30,7 +30,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * [state]`.status` reflects the link first: CONNECTING while (re)connecting, DISCONNECTED when
  * not linked; once linked, the relay camera's own status (so a relay without camera shows
- * DISCONNECTED and the UI greys out).
+ * DISCONNECTED and the UI greys out). [linkState] is the link alone, whatever the relay camera does.
  *
  * On link loss (channel error/EOF, or [linkTimeoutMs] without any incoming item) the channel is
  * closed, pending commands complete false with « <action> non confirmé — vérifie l'appareil », and
@@ -56,6 +56,11 @@ class RemoteCamera(
 
     private val _frames = MutableStateFlow<ByteArray?>(null)
     override val liveViewFrames: StateFlow<ByteArray?> = _frames.asStateFlow()
+
+    private val _linkState = MutableStateFlow<LinkState>(LinkState.Idle)
+
+    /** The link to the relay, apart from the relay camera's status (see [LinkState]). */
+    val linkState: StateFlow<LinkState> = _linkState.asStateFlow()
 
     private val lock = Any()
 
@@ -109,13 +114,14 @@ class RemoteCamera(
         val (gen, old) = synchronized(lock) {
             val old = stopLocked()
             _state.value = CameraState(status = ConnectionStatus.CONNECTING)
+            _linkState.value = LinkState.Connecting
             generation to old
         }
         old?.close()
         when (val r = attempt(gen)) {
             Attempt.Ok -> Unit
-            is Attempt.Rejected -> fail(gen, r.reason)
-            Attempt.Failed -> fail(gen, UNREACHABLE)
+            is Attempt.Rejected -> fail(gen, LinkState.Rejected(r.reason), r.reason)
+            Attempt.Failed -> fail(gen, LinkState.Unreachable, UNREACHABLE)
         }
     }
 
@@ -123,6 +129,7 @@ class RemoteCamera(
         val old = synchronized(lock) {
             val old = stopLocked()
             _state.value = CameraState()
+            _linkState.value = LinkState.Idle
             old
         }
         old?.close()
@@ -145,14 +152,15 @@ class RemoteCamera(
         return s.channel
     }
 
-    /** DISCONNECTED with [error]; [keepUnconfirmed] keeps a shown « … non confirmé » warning instead. */
-    private fun fail(gen: Int, error: String, keepUnconfirmed: Boolean = false) = synchronized(lock) {
+    /**
+     * DISCONNECTED with link state [link] and [error] as lastError; a null [error] keeps the current
+     * lastError (giving up: the loss was already reported, possibly as « … non confirmé »).
+     */
+    private fun fail(gen: Int, link: LinkState, error: String?) = synchronized(lock) {
         if (gen != generation) return@synchronized
         session = null
-        _state.update {
-            val shown = it.lastError?.takeIf { e -> keepUnconfirmed && e.endsWith(UNCONFIRMED_SUFFIX) }
-            it.copy(status = ConnectionStatus.DISCONNECTED, busy = false, lastError = shown ?: error)
-        }
+        _linkState.value = link
+        _state.update { it.copy(status = ConnectionStatus.DISCONNECTED, busy = false, lastError = error ?: it.lastError) }
     }
 
     private suspend fun attempt(gen: Int): Attempt {
@@ -285,6 +293,7 @@ class RemoteCamera(
             // Fresh state, but an unconfirmed command from before a reconnection stays reported.
             val kept = _state.value.lastError?.takeIf { it != LINK_LOST }
             _state.value = CameraState(ConnectionStatus.CONNECTED, model = w.model, serial = w.serial, lastError = kept)
+            _linkState.value = LinkState.Connected
             log.info("Connecté au relais (${w.model ?: "appareil inconnu"})")
         }
         s.handshake.complete(w)
@@ -326,12 +335,14 @@ class RemoteCamera(
                 is End.Rejected -> {
                     log.warn("Relais : connexion refusée : ${end.reason}")
                     _state.update { it.copy(status = ConnectionStatus.DISCONNECTED, busy = false, lastError = end.reason) }
+                    _linkState.value = LinkState.Rejected(end.reason)
                 }
                 else -> {
                     log.warn("Connexion au relais perdue, reconnexion…")
                     _state.update {
                         it.copy(status = ConnectionStatus.CONNECTING, busy = false, lastError = unconfirmed ?: LINK_LOST)
                     }
+                    _linkState.value = LinkState.Reconnecting
                     val gen = generation
                     reconnectJob = scope.launch { reconnect(gen) }
                 }
@@ -362,10 +373,10 @@ class RemoteCamera(
         }
         when (outcome) {
             Attempt.Ok -> log.info("Reconnecté au relais")
-            is Attempt.Rejected -> fail(gen, outcome.reason)
+            is Attempt.Rejected -> fail(gen, LinkState.Rejected(outcome.reason), outcome.reason)
             else -> {
                 log.warn("Relais : abandon de la reconnexion")
-                fail(gen, LINK_LOST, keepUnconfirmed = true)
+                fail(gen, LinkState.GaveUp, error = null) // the loss was reported when it happened
             }
         }
         val self = currentCoroutineContext()[Job]
@@ -449,7 +460,7 @@ class RemoteCamera(
         /** Suffix of the warning for a command whose result was lost with the link. */
         const val UNCONFIRMED_SUFFIX = " non confirmé — vérifie l'appareil"
         const val LINK_LOST = "Connexion au relais perdue"
-        private const val UNREACHABLE = "Relais injoignable"
+        const val UNREACHABLE = "Relais injoignable"
         private const val BUSY = "Relais occupé"
         private const val BLUETOOTH_LIVE_VIEW =
             "Le Bluetooth est trop lent pour le live view. Passe en Wi-Fi pour l'utiliser."
