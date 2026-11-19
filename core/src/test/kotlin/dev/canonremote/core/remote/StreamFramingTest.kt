@@ -5,6 +5,8 @@ import java.io.ByteArrayOutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -90,5 +92,25 @@ class StreamFramingTest {
         }
         a.close(); a.close()
         assertEquals(1, closed)
+    }
+
+    @Test fun closeWhileReaderBlockedCompletesIncoming() = runBlocking {
+        val src = PipedOutputStream(); val inp = PipedInputStream(src, 1 shl 16)
+        val ch = StreamMessageChannel(inp, PipedOutputStream(PipedInputStream(1 shl 16)), {}, Dispatchers.IO)
+        val job = async { ch.incoming.toList() }
+        delay(200) // reader is now blocked in readFrame
+        ch.close()
+        assertTrue(withTimeout(2000) { job.await() }.isEmpty())
+    }
+
+    @Test fun secondCollectThrows() = runBlocking {
+        val ch = StreamMessageChannel(ByteArrayInputStream(ByteArray(0)), ByteArrayOutputStream(), {}, Dispatchers.IO)
+        ch.incoming.toList()
+        try { ch.incoming.toList(); fail() } catch (_: IllegalStateException) {}
+    }
+
+    @Test fun oversizedWriteRejected() {
+        try { StreamFraming.writeFrame(ByteArrayOutputStream(), 1, ByteArray(StreamFraming.MAX_PAYLOAD + 1)); fail() }
+        catch (_: IllegalArgumentException) {}
     }
 }

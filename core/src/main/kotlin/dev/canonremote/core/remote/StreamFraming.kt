@@ -26,6 +26,7 @@ object StreamFraming {
     const val MAX_PAYLOAD = 16 * 1024 * 1024
 
     fun writeFrame(out: OutputStream, type: Int, payload: ByteArray) {
+        require(payload.size <= MAX_PAYLOAD) { "Payload too large: ${payload.size}" }
         val n = payload.size
         val header = byteArrayOf(
             type.toByte(),
@@ -63,6 +64,10 @@ object StreamFraming {
 /**
  * [MessageChannel] over a byte stream (Bluetooth RFCOMM in :app). A single reader runs on [io],
  * started lazily on first collect of [incoming]. Blocking reads are only interrupted by [close].
+ *
+ * [io] must allow at least 2 concurrent threads (e.g. Dispatchers.IO): the reader blocks one
+ * while writes need another. A remote EOF or read error terminates [incoming] but does NOT call
+ * [onClose]; the owner must call [close] when [incoming] terminates.
  */
 class StreamMessageChannel(
     private val input: InputStream,
@@ -98,7 +103,7 @@ class StreamMessageChannel(
                 items.trySend(item)
             }
             items.close()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // closed locally: complete normally rather than reporting the read failure
             items.close(if (closed.get() && e is IOException) null else e)
         }
