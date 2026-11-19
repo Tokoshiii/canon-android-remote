@@ -13,4 +13,7 @@ class CanonRemoteApp : Application() {
     val settings: AppSettings by lazy {
         AppSettings(SharedPrefsStore(getSharedPreferences("settings", MODE_PRIVATE)))
     }
+
+    /** Cameras (USB, relay, remote) shared by the UI and the relay service. */
+    val hub: CameraHub by lazy { CameraHub(this, log, settings) }
 }

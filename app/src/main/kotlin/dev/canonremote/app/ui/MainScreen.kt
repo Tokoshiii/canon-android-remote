@@ -52,6 +52,8 @@ fun MainScreen(
     frame: ImageBitmap?,
     errors: Flow<String>,
     actions: CameraActions,
+    statusLabel: String,
+    bluetoothRemote: Boolean,
     connection: @Composable () -> Unit,
     settings: @Composable () -> Unit,
 ) {
@@ -80,6 +82,9 @@ fun MainScreen(
                     frame = frame,
                     actions = actions,
                     onStatusClick = { tab = 1 },
+                    statusLabel = statusLabel,
+                    bluetoothRemote = bluetoothRemote,
+                    onSwitchToWifi = { tab = 1 },
                 )
                 1 -> connection()
                 else -> settings()

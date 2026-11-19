@@ -15,8 +15,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.canonremote.app.relay.statusChipLabel
 import dev.canonremote.app.ui.MainScreen
 import dev.canonremote.app.ui.connection.ConnectionScreen
+import dev.canonremote.app.ui.connection.ConnectionUi
 import dev.canonremote.app.ui.logs.LogsScreen
 import dev.canonremote.app.ui.settings.AboutInfo
 import dev.canonremote.app.ui.settings.SettingsTab
@@ -39,7 +41,11 @@ class MainActivity : ComponentActivity() {
             val controls by viewModel.controls.collectAsStateWithLifecycle()
             val frame by viewModel.frame.collectAsStateWithLifecycle()
             val usb by viewModel.usbStatus.collectAsStateWithLifecycle()
-            val camera by viewModel.cameraState.collectAsStateWithLifecycle()
+            val usbCamera by viewModel.usbCameraState.collectAsStateWithLifecycle()
+            val mode by viewModel.mode.collectAsStateWithLifecycle()
+            val relay by viewModel.relayState.collectAsStateWithLifecycle()
+            val remoteLink by viewModel.remoteLink.collectAsStateWithLifecycle()
+            val bluetoothRemote by viewModel.bluetoothRemote.collectAsStateWithLifecycle()
             val logEntries by viewModel.log.entries.collectAsStateWithLifecycle()
             val dark = isDarkTheme(prefs.theme)
 
@@ -60,13 +66,19 @@ class MainActivity : ComponentActivity() {
                     frame = frame,
                     errors = viewModel.errors,
                     actions = viewModel,
+                    statusLabel = statusChipLabel(mode, controls.statusLabel),
+                    bluetoothRemote = bluetoothRemote,
                     connection = {
                         ConnectionScreen(
-                            status = usb,
-                            cameraModel = camera.model,
-                            serial = camera.serial,
-                            onConnect = viewModel::connect,
-                            onDisconnect = viewModel::disconnect,
+                            ui = ConnectionUi(
+                                mode = mode,
+                                usbStatus = usb,
+                                cameraModel = usbCamera.model,
+                                serial = usbCamera.serial,
+                                relay = relay,
+                                remoteLink = remoteLink,
+                            ),
+                            actions = viewModel,
                         )
                     },
                     settings = {
