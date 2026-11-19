@@ -1,5 +1,6 @@
 package dev.canonremote.core
 
+import dev.canonremote.ptp.CanonCaptureDest
 import dev.canonremote.ptp.CanonEvent
 import dev.canonremote.ptp.CanonOp
 import dev.canonremote.ptp.CanonProp
@@ -8,6 +9,7 @@ import dev.canonremote.ptp.DeviceInfo
 import dev.canonremote.ptp.PtpOp
 import dev.canonremote.ptp.PtpResponse
 import dev.canonremote.ptp.extractLiveViewJpeg
+import dev.canonremote.ptp.hasCanonEventRecords
 import dev.canonremote.ptp.parseCanonEvents
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -57,12 +59,13 @@ class CanonCamera(
             if (!open.isOk && open.responseCode != PtpResponse.SESSION_ALREADY_OPEN) {
                 throw PtpException(open.responseCode, "OpenSession refusé: 0x%04X".format(open.responseCode))
             }
-            val info = DeviceInfo.decode(session.executeOk(PtpOp.GET_DEVICE_INFO).data ?: ByteArray(0))
+            val info = DeviceInfo.decode(session.executeOk(PtpOp.GET_DEVICE_INFO, hexMax = CONNECT_HEX_MAX).data ?: ByteArray(0))
             log.info("Appareil: ${info.model} (série ${info.serialNumber})")
             _state.update { it.copy(model = info.model, serial = info.serialNumber) }
             session.executeOk(CanonOp.SET_REMOTE_MODE, listOf(1))
             session.executeOk(CanonOp.SET_EVENT_MODE, listOf(1))
-            pollEvents(logData = true)
+            val initialEvents = pollEvents(hexMax = CONNECT_HEX_MAX)
+            ensureCaptureToCard(initialEvents)
             _state.update { it.copy(status = ConnectionStatus.CONNECTED) }
         } catch (e: CancellationException) {
             _state.value = CameraState()
@@ -81,7 +84,10 @@ class CanonCamera(
             while (isActive) {
                 delay(pollIntervalMs)
                 try {
-                    pollEvents(logData = false)
+                    // Idle polls stay out of the log: only failures (once per code) and polls carrying events.
+                    pollEvents(logIf = { r ->
+                        if (r.isOk) hasCanonEventRecords(r.data) else r.responseCode != lastErrorCode
+                    })
                     lastErrorCode = null
                 } catch (e: CancellationException) {
                     throw e
@@ -195,6 +201,15 @@ class CanonCamera(
             if (on == _state.value.liveView) return@withLock true
             if (on) {
                 val ok = command("Live view", lockHeld = true) {
+                    // As libgphoto2: EVFMode = 1 first (best effort, the property may not exist), then output to PC.
+                    try {
+                        session.executeOk(
+                            CanonOp.SET_DEVICE_PROP_VALUE_EX,
+                            dataOut = CanonValues.setPropPayload(CanonProp.EVF_MODE, 1),
+                        )
+                    } catch (e: PtpException) {
+                        log.warn("EVFMode (0xD1B3) refusé : 0x%04X".format(e.responseCode))
+                    }
                     session.executeOk(
                         CanonOp.SET_DEVICE_PROP_VALUE_EX,
                         dataOut = CanonValues.setPropPayload(CanonProp.EVF_OUTPUT_DEVICE, 2),
@@ -224,15 +239,17 @@ class CanonCamera(
         var lastErrorCode: Int? = null
         while (currentCoroutineContext().isActive) {
             try {
+                // Frames are not logged; only errors other than "not ready/busy", once per code.
                 val r = session.execute(
                     CanonOp.GET_VIEWFINDER_DATA,
-                    listOf(0x00200000, 0, 0),
-                    logData = false,
+                    listOf(0x00100000, 0, 0),
+                    hexMax = 0,
+                    logIf = { !it.isOk && !isLiveViewSkip(it.responseCode) && it.responseCode != lastErrorCode },
                 )
                 if (r.isOk) {
                     lastErrorCode = null
                     r.data?.let { extractLiveViewJpeg(it) }?.let { _liveViewFrames.value = it }
-                } else if (r.responseCode != PtpResponse.CANON_NOT_READY && r.responseCode != PtpResponse.DEVICE_BUSY) {
+                } else if (!isLiveViewSkip(r.responseCode)) {
                     if (r.responseCode != lastErrorCode) {
                         log.warn("GetViewFinderData: réponse 0x%04X".format(r.responseCode))
                     }
@@ -281,10 +298,45 @@ class CanonCamera(
         }
     }
 
-    private suspend fun pollEvents(logData: Boolean) {
-        val data = session.executeOk(CanonOp.GET_EVENT, logData = logData).data ?: return
+    private fun isLiveViewSkip(code: Int) = code == PtpResponse.CANON_NOT_READY || code == PtpResponse.DEVICE_BUSY
+
+    private suspend fun pollEvents(
+        hexMax: Int = PtpSession.DEFAULT_HEX_MAX,
+        logIf: ((PtpResult) -> Boolean)? = null,
+    ): List<CanonEvent> {
+        val data = session.executeOk(CanonOp.GET_EVENT, hexMax = hexMax, logIf = logIf).data ?: return emptyList()
         val events = parseCanonEvents(data)
         _state.update { s -> s.copy(settings = events.fold(s.settings, ::applyEvent)) }
+        return events
+    }
+
+    /**
+     * As libgphoto2: if the initial dump reports the capture destination as host RAM (4), switch it
+     * to the card value (first value of its list other than 4). A refusal is only a warning.
+     */
+    private suspend fun ensureCaptureToCard(events: List<CanonEvent>) {
+        val prop = CanonProp.CAPTURE_DESTINATION
+        val current = events.filterIsInstance<CanonEvent.PropValueChanged>().lastOrNull { it.prop == prop }?.value
+        if (current == null) {
+            log.warn("Destination de capture (0xD11C) absente des événements initiaux")
+            return
+        }
+        if (current != CanonCaptureDest.HOST) {
+            log.info("Destination de capture : carte (0x%X)".format(current))
+            return
+        }
+        val card = events.filterIsInstance<CanonEvent.AvailableValuesChanged>().lastOrNull { it.prop == prop }
+            ?.values?.firstOrNull { it != CanonCaptureDest.HOST }
+        if (card == null) {
+            log.warn("Destination de capture : PC (0x4), aucune valeur « carte » proposée")
+            return
+        }
+        try {
+            session.executeOk(CanonOp.SET_DEVICE_PROP_VALUE_EX, dataOut = CanonValues.setPropPayload(prop, card))
+            log.info("Destination de capture réglée sur la carte (0x%X)".format(card))
+        } catch (e: PtpException) {
+            log.warn("Réglage de la destination de capture refusé : 0x%04X".format(e.responseCode))
+        }
     }
 
     private fun applyEvent(
@@ -343,5 +395,7 @@ class CanonCamera(
 
     private companion object {
         const val LIVE_VIEW_INTERVAL_MS = 50L
+        /** Connect-phase payloads (DeviceInfo, initial event dump) are dumped up to this many bytes. */
+        const val CONNECT_HEX_MAX = 8192
     }
 }

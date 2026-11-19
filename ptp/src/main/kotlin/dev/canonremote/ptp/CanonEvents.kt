@@ -44,6 +44,10 @@ fun parseCanonEvents(data: ByteArray): List<CanonEvent> {
     return events
 }
 
+/** True when a GetEvent payload holds at least one record (not just the 8-byte terminator). */
+fun hasCanonEventRecords(data: ByteArray?): Boolean =
+    data != null && data.size >= RECORD_HEADER && ByteReader(data, 4).u32() != 0
+
 private fun decodeRecord(type: Int, size: Int, body: ByteReader): CanonEvent = when (type) {
     CanonEventCode.PROP_VALUE_CHANGED -> {
         val prop = body.u32()

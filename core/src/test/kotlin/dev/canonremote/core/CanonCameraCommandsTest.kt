@@ -1,5 +1,6 @@
 package dev.canonremote.core
 
+import dev.canonremote.ptp.CanonProp
 import dev.canonremote.ptp.ContainerType
 import dev.canonremote.ptp.PtpOp
 import dev.canonremote.ptp.PtpResponse
@@ -35,6 +36,12 @@ class CanonCameraCommandsTest {
     }
 
     private fun TestScope.camera() = CanonCamera(t, log, backgroundScope, 200)
+
+    private fun propSets() = t.sent.filter { it.type == ContainerType.DATA && it.code == 0x9110 }
+        .map { p -> p.payload.let { u32(it, 4) to u32(it, 8) } }
+
+    private fun u32(b: ByteArray, at: Int) =
+        (0..3).sumOf { (b[at + it].toInt() and 0xFF) shl (8 * it) }
 
     private fun commands() = t.sent.filter { it.type == ContainerType.COMMAND && it.code != 0x9116 }
 
@@ -145,15 +152,42 @@ class CanonCameraCommandsTest {
         advanceTimeBy(60)
         assertArrayEquals(jpeg, cam.liveViewFrames.value)
         val vf = commands().first { it.code == 0x9153 }
-        assertEquals(listOf(0x00200000, 0, 0), vf.params)
+        assertEquals(listOf(0x00100000, 0, 0), vf.params)
 
         assertTrue(cam.setLiveView(false))
         assertFalse(cam.state.value.liveView)
         assertNull(cam.liveViewFrames.value)
-        val sets = t.sent.filter { it.type == ContainerType.DATA && it.code == 0x9110 }
-        assertEquals(2, sets.size)
-        assertEquals(2, sets[0].payload[8].toInt())
-        assertEquals(0, sets[1].payload[8].toInt())
+        assertEquals(
+            listOf(CanonProp.EVF_MODE to 1, CanonProp.EVF_OUTPUT_DEVICE to 2, CanonProp.EVF_OUTPUT_DEVICE to 0),
+            propSets(),
+        )
+    }
+
+    @Test fun liveViewStartsWhenEvfModeIsRefused() = runTest {
+        script { cmd ->
+            when {
+                cmd.code == 0x9153 -> t.respond(cmd, data = jpegBlock)
+                cmd.code == 0x9110 && propSets().last().first == CanonProp.EVF_MODE ->
+                    t.respond(cmd, code = PtpResponse.DEVICE_BUSY)
+                else -> null
+            }
+        }
+        val cam = camera().connectedAndClear()
+        assertTrue(cam.setLiveView(true))
+        assertTrue(cam.state.value.liveView)
+        assertTrue(log.entries.value.any { it.level == LogLevel.WARN && it.message.contains("0xD1B3") })
+        advanceTimeBy(60)
+        assertArrayEquals(jpeg, cam.liveViewFrames.value)
+    }
+
+    @Test fun liveViewFramesAreNotLogged() = runTest {
+        script { cmd -> if (cmd.code == 0x9153) t.respond(cmd, data = jpegBlock) else null }
+        val cam = camera().connectedAndClear()
+        cam.setLiveView(true)
+        log.clear()
+        advanceTimeBy(300)
+        assertTrue(t.sent.count { it.code == 0x9153 } > 2)
+        assertTrue(log.entries.value.none { it.message.contains("0x9153") || it.message.startsWith("← DATA") })
     }
 
     @Test fun liveViewLoopStopsAfterOff() = runTest {

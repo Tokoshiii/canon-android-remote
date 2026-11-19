@@ -83,10 +83,74 @@ class PtpSessionTest {
         assertTrue(ptp.any { it == "← 0x2001" })
     }
 
-    @Test fun logDataFalseOmitsHex() = runBlocking {
+    private fun ptpLines() = log.entries.value.filter { it.level == LogLevel.PTP }.map { it.message }
+
+    @Test fun hexMaxZeroOmitsHex() = runBlocking {
         t.handler = { t.respond(it, data = byteArrayOf(1)) }
-        s.execute(0x9116, logData = false)
+        s.execute(0x9116, hexMax = 0)
         assertTrue(log.entries.value.any { it.message == "← DATA 1 o" })
+    }
+
+    @Test fun hexMaxDumpsLargePayloadInFull() = runBlocking {
+        t.handler = { t.respond(it, data = ByteArray(1000) { 0x11 }) }
+        s.execute(PtpOp.GET_DEVICE_INFO, hexMax = 8192)
+        val line = ptpLines().single { it.startsWith("← DATA") }
+        assertFalse(line, line.contains("…"))
+        assertEquals(1000, line.substringAfter(": ").split(" ").size)
+    }
+
+    @Test fun defaultHexIsTruncated() = runBlocking {
+        t.handler = { t.respond(it, data = ByteArray(1000)) }
+        s.execute(0x9116)
+        assertTrue(ptpLines().single { it.startsWith("← DATA") }.contains("(+936 octets)"))
+    }
+
+    @Test fun logIfFalseSuppressesPacketLines() = runBlocking {
+        t.handler = { t.respond(it, data = byteArrayOf(1)) }
+        val r = s.execute(0x9116, logIf = { false })
+        assertTrue(r.isOk)
+        assertTrue(ptpLines().isEmpty())
+    }
+
+    @Test fun logIfTrueLogsPacketLinesInOrder() = runBlocking {
+        t.handler = { t.respond(it, data = byteArrayOf(1)) }
+        s.execute(0x9116, logIf = { !it.isOk || (it.data?.size ?: 0) > 0 })
+        val ptp = ptpLines()
+        assertEquals(3, ptp.size)
+        assertTrue(ptp[0].startsWith("→ 0x9116"))
+        assertTrue(ptp[1].startsWith("← DATA 1 o"))
+        assertEquals("← 0x2001", ptp[2])
+    }
+
+    @Test fun logIfSeesTheResult() = runBlocking {
+        t.handler = { t.respond(it, code = PtpResponse.DEVICE_BUSY) }
+        s.execute(0x9116, logIf = { !it.isOk })
+        assertTrue(ptpLines().contains("← 0x2019"))
+    }
+
+    @Test fun suppressedTransactionIsLoggedWhenTransportFails() = runBlocking {
+        t.failNextReceive = java.io.IOException("usb")
+        try {
+            s.execute(0x9116, logIf = { false })
+            fail("expected IOException")
+        } catch (e: java.io.IOException) {
+        }
+        assertTrue(ptpLines().any { it.startsWith("→ 0x9116") })
+    }
+
+    @Test fun containersWithStaleTransactionIdAreDiscarded() = runBlocking {
+        s.execute(PtpOp.OPEN_SESSION, listOf(1))
+        t.handler = { cmd ->
+            val stale = cmd.transactionId - 1
+            listOf(
+                PtpContainer(ContainerType.DATA, cmd.code, stale, payload = byteArrayOf(7)),
+                PtpContainer(ContainerType.RESPONSE, PtpResponse.OK, stale),
+            ) + t.respond(cmd, code = PtpResponse.DEVICE_BUSY, data = byteArrayOf(5))
+        }
+        val r = s.execute(PtpOp.GET_DEVICE_INFO)
+        assertEquals(PtpResponse.DEVICE_BUSY, r.responseCode)
+        assertArrayEquals(byteArrayOf(5), r.data)
+        assertEquals(2, log.entries.value.count { it.level == LogLevel.WARN && it.message.contains("tid=0") })
     }
 
     @Test fun cancelledCallCompletesTransaction() = runBlocking {

@@ -97,4 +97,12 @@ class CanonEventsTest {
             events,
         )
     }
+
+    @Test
+    fun detectsPayloadsWithRecords() {
+        assertEquals(false, hasCanonEventRecords(null))
+        assertEquals(false, hasCanonEventRecords(ByteArray(0)))
+        assertEquals(false, hasCanonEventRecords(terminator))
+        assertEquals(true, hasCanonEventRecords(propChanged() + terminator))
+    }
 }
