@@ -99,6 +99,17 @@ class CanonCameraCommandsTest {
         assertFalse(cam.state.value.busy)
     }
 
+    @Test fun shootTransportErrorOnReleaseDisconnects() = runTest {
+        script { cmd ->
+            if (cmd.code == 0x9129 && cmd.params == listOf(2)) throw java.io.IOException("usb")
+            null
+        }
+        val cam = camera().connectedAndClear()
+        assertFalse(cam.shoot())
+        assertEquals(ConnectionStatus.DISCONNECTED, cam.state.value.status)
+        assertTrue(commands().any { it.code == 0x9129 && it.params == listOf(1) })
+    }
+
     @Test fun secondShootWhileBusyIsIgnored() = runTest {
         script { cmd -> if (cmd.code == 0x9128 || cmd.code == 0x9129) { delay(100); t.respond(cmd) } else null }
         val cam = camera().connectedAndClear()

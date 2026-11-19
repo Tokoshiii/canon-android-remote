@@ -108,8 +108,9 @@ class CanonCamera(
                 log.warn("Arrêt du live view ignoré: ${e.message}")
             }
         }
-        eventLoop?.cancel()
-        eventLoop?.join()
+        val loop = eventLoop
+        loop?.cancel()
+        loop?.join()
         eventLoop = null
         try {
             session.execute(PtpOp.CLOSE_SESSION)
@@ -143,15 +144,19 @@ class CanonCamera(
                 session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(1, 0))
                 // Once the shutter is pressed, always release it, even if a later step fails.
                 var secondPressed = false
+                var failure: Throwable? = null
                 try {
                     session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(2, 0))
                     secondPressed = true
-                } finally {
-                    withContext(NonCancellable) {
-                        if (secondPressed) releaseBestEffort(2)
-                        releaseBestEffort(1)
-                    }
+                } catch (e: Throwable) {
+                    failure = e
                 }
+                val transportError = withContext(NonCancellable) {
+                    val first = if (secondPressed) releaseBestEffort(2) else null
+                    releaseBestEffort(1) ?: first
+                }
+                failure?.let { throw it }
+                transportError?.let { throw it }
             }
         } finally {
             _state.update { it.copy(busy = false) }
@@ -159,15 +164,19 @@ class CanonCamera(
         }
     }
 
-    private suspend fun releaseBestEffort(param: Int) {
+    /** Sends RemoteReleaseOff; PtpException is logged, any other (transport) error is returned for the caller to rethrow. */
+    private suspend fun releaseBestEffort(param: Int): Exception? =
         try {
             session.executeOk(CanonOp.REMOTE_RELEASE_OFF, listOf(param))
+            null
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: PtpException) {
             log.warn("RemoteReleaseOff($param) ignoré: ${e.message}")
+            null
+        } catch (e: Exception) {
+            e
         }
-    }
 
     suspend fun autofocus(): Boolean = command("Mise au point automatique") {
         session.executeOk(CanonOp.DO_AF)
@@ -240,9 +249,10 @@ class CanonCamera(
     }
 
     private suspend fun stopLiveViewLoop() {
-        liveViewLoop?.cancel()
+        val loop = liveViewLoop
+        loop?.cancel()
         // Joining is safe: PtpSession transactions are NonCancellable and finish on their own.
-        liveViewLoop?.join()
+        loop?.join()
         liveViewLoop = null
     }
 
@@ -312,10 +322,12 @@ class CanonCamera(
     /** Must be called with [lifecycle] held. */
     private fun failConnection(message: String) {
         generation++
-        eventLoop?.cancel()
+        val ev = eventLoop
+        val lv = liveViewLoop
         eventLoop = null
-        liveViewLoop?.cancel()
         liveViewLoop = null
+        ev?.cancel()
+        lv?.cancel()
         closeTransport()
         _liveViewFrames.value = null
         _state.value = CameraState(status = ConnectionStatus.DISCONNECTED, lastError = message)
