@@ -9,6 +9,7 @@ import java.net.InetAddress
 import kotlin.coroutines.resume
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
@@ -20,6 +21,9 @@ const val RELAY_SERVICE_TYPE = "_canonremote._tcp"
 
 /** A stuck resolution must not block the discovery of other relays. */
 private const val RESOLVE_TIMEOUT_MS = 10_000L
+
+/** Delay before retrying a resolution that failed with FAILURE_ALREADY_ACTIVE (API 31-33). */
+private const val RESOLVE_RETRY_DELAY_MS = 500L
 
 data class DiscoveredRelay(val name: String, val host: String, val port: Int)
 
@@ -107,17 +111,37 @@ class RelayNsd(context: Context) {
         }
     }
 
+    /**
+     * Resolves [info]. On API 31-33 a resolution still running elsewhere in the system fails with
+     * FAILURE_ALREADY_ACTIVE: wait a little and retry once.
+     */
+    private suspend fun resolve(info: NsdServiceInfo): DiscoveredRelay? {
+        val first = resolveOnce(info)
+        if (first is Resolution.Failed && first.errorCode == NsdManager.FAILURE_ALREADY_ACTIVE &&
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        ) {
+            delay(RESOLVE_RETRY_DELAY_MS)
+            return (resolveOnce(info) as? Resolution.Done)?.relay
+        }
+        return (first as? Resolution.Done)?.relay
+    }
+
+    private sealed interface Resolution {
+        data class Done(val relay: DiscoveredRelay?) : Resolution
+        data class Failed(val errorCode: Int) : Resolution
+    }
+
     @Suppress("DEPRECATION")
-    private suspend fun resolve(info: NsdServiceInfo): DiscoveredRelay? =
-        suspendCancellableCoroutine<DiscoveredRelay?> { cont ->
+    private suspend fun resolveOnce(info: NsdServiceInfo): Resolution =
+        suspendCancellableCoroutine<Resolution> { cont ->
             val listener = object : NsdManager.ResolveListener {
                 override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                    if (cont.isActive) cont.resume(null)
+                    if (cont.isActive) cont.resume(Resolution.Failed(errorCode))
                 }
                 override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                     val host = hostOf(serviceInfo)
                     val relay = host?.let { DiscoveredRelay(name = serviceInfo.serviceName, host = it, port = serviceInfo.port) }
-                    if (cont.isActive) cont.resume(relay)
+                    if (cont.isActive) cont.resume(Resolution.Done(relay))
                 }
             }
             cont.invokeOnCancellation {
