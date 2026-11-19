@@ -13,9 +13,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** DNS-SD service type announced by the relay on the local Wi-Fi. */
 const val RELAY_SERVICE_TYPE = "_canonremote._tcp"
+
+/** A stuck resolution must not block the discovery of other relays. */
+private const val RESOLVE_TIMEOUT_MS = 10_000L
 
 data class DiscoveredRelay(val name: String, val host: String, val port: Int)
 
@@ -87,7 +91,7 @@ class RelayNsd(context: Context) {
             for (event in events) {
                 when (event) {
                     is Event.Found -> {
-                        val relay = resolve(event.info) ?: continue
+                        val relay = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) { resolve(event.info) } ?: continue
                         relays[relay.name] = relay
                     }
                     is Event.Lost -> if (relays.remove(event.name) == null) continue

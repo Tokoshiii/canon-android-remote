@@ -65,4 +65,5 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.play.services.code.scanner)
     testImplementation(libs.junit)
+    testImplementation(libs.slf4j.nop)
 }

@@ -31,11 +31,25 @@ class HotspotAddressTest {
     @Test
     fun fallsBackToSiteLocalAddressOtherThanStation() {
         val ip = pickHotspotAddress(
-            candidates = listOf(a("wlan0", "192.168.1.20"), a("eth7", "8.8.8.8", false), a("v4-rndis", "172.20.10.2")),
+            candidates = listOf(a("wlan0", "192.168.1.20"), a("eth7", "8.8.8.8", false), a("rmnet0", "10.1.2.3"), a("v4-rmnet0", "192.0.0.4"), a("eth0", "172.20.10.2")),
             stationInterfaces = setOf("wlan0"),
             stationAddresses = setOf("192.168.1.20"),
         )
         assertEquals("172.20.10.2", ip)
+    }
+
+    @Test
+    fun fallbackNeverPicksCellularClatDummyOrLoopback() {
+        assertNull(
+            pickHotspotAddress(
+                candidates = listOf(
+                    a("rmnet_data0", "10.20.30.40"), a("ccmni1", "10.9.8.7"), a("v4-rmnet_data0", "192.168.0.4"),
+                    a("dummy0", "10.0.0.9"), a("lo", "127.0.0.1"),
+                ),
+                stationInterfaces = emptySet(),
+                stationAddresses = emptySet(),
+            ),
+        )
     }
 
     @Test

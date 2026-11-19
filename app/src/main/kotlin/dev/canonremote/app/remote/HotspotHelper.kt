@@ -159,6 +159,9 @@ private var joined: Pair<ConnectivityManager, ConnectivityManager.NetworkCallbac
  * then binds the whole process to it with [ConnectivityManager.bindProcessToNetwork] so that
  * [connectWebSocket] (Ktor CIO) goes through it. Suspends until the network is available; throws
  * [IllegalStateException] after 30 s. Call [leaveHotspot] when done.
+ *
+ * Calls must be serialized (one join at a time): a new call first leaves the previous hotspot, and
+ * the single process-wide binding/callback is shared with [leaveHotspot].
  */
 suspend fun joinHotspot(context: Context, ssid: String, password: String): Network {
     leaveHotspot()

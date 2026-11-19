@@ -27,6 +27,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -53,7 +54,8 @@ private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 /**
  * [MessageChannel] over a Ktor WebSocket session: a text frame carries a [MessageCodec] JSON
  * message, a binary frame a JPEG. [incoming] completes when the session closes (remote close
- * frame, or local [close]) and throws on transport/decoding errors.
+ * frame, or local [close]) and throws on transport/decoding errors; after a decoding error the
+ * owner must still call [close].
  *
  * [close] sends a normal close frame after everything already sent (a [send] that returned is
  * delivered before the close), then calls [onClose].
@@ -68,27 +70,30 @@ class WebSocketChannel(
 
     override val incoming: Flow<Incoming> = flow {
         check(collected.compareAndSet(false, true)) { "incoming can only be collected once" }
-        try {
-            while (true) {
-                // receiveCatching throws only if our collector is cancelled; a session closed or
-                // cancelled underneath us comes back as a closed result (emit stays outside, so
-                // downstream aborts such as first() propagate untouched).
-                val result = session.incoming.receiveCatching()
-                val frame = result.getOrNull()
-                if (frame == null) {
-                    val cause = result.exceptionOrNull()
-                    if (cause == null || cause is ClosedReceiveChannelException || closed.get()) break
-                    throw cause as? IOException ?: IOException("Liaison WebSocket interrompue", cause)
-                }
-                when (frame) {
-                    is Frame.Text -> emit(Incoming.Msg(MessageCodec.decode(frame.readText())))
-                    is Frame.Binary -> emit(Incoming.Jpeg(frame.readBytes()))
-                    else -> Unit // control frames are handled by the session
-                }
+        while (true) {
+            // receiveCatching throws only if our collector is cancelled; a session closed or
+            // cancelled underneath us comes back as a closed result (emit stays outside, so
+            // downstream aborts such as first() propagate untouched).
+            val result = session.incoming.receiveCatching()
+            val frame = result.getOrNull()
+            if (frame == null) {
+                // The transport has ended: the session is over, release a waiting server handler.
+                // (Not on a downstream abort: the owner may still send, e.g. Rejected, then close.)
+                done.complete(Unit)
+                val cause = result.exceptionOrNull()
+                if (cause == null || cause is ClosedReceiveChannelException || closed.get()) break
+                throw cause as? IOException ?: IOException("Liaison WebSocket interrompue", cause)
             }
-        } finally {
-            done.complete(Unit)
+            when (frame) {
+                is Frame.Text -> emit(Incoming.Msg(MessageCodec.decode(frame.readText())))
+                is Frame.Binary -> emit(Incoming.Jpeg(frame.readBytes()))
+                else -> Unit // control frames are handled by the session
+            }
         }
+    }
+
+    init {
+        session.coroutineContext[Job]?.invokeOnCompletion { done.complete(Unit) }
     }
 
     override suspend fun send(message: Message) {
@@ -99,12 +104,11 @@ class WebSocketChannel(
         session.send(Frame.Binary(true, bytes))
     }
 
-    /** Test hook: sends an arbitrary text frame. */
-    internal suspend fun sendRawText(text: String) {
-        session.send(Frame.Text(text))
-    }
-
-    /** Suspends until [incoming] has ended or [close] has finished. */
+    /**
+     * Suspends until the session is over: the transport ended (seen by [incoming]), [close] has
+     * finished, or the session's job completed. A collector that merely stops collecting (e.g.
+     * `incoming.first()`) does not end it.
+     */
     suspend fun awaitClosed() = done.await()
 
     override fun close() {
@@ -132,7 +136,8 @@ class WebSocketChannel(
  * session is wrapped in a [WebSocketChannel] and passed to [onClient]; the route handler then stays
  * suspended until the channel ends, so the session remains open while the relay uses it.
  *
- * [port] 0 picks a free port (see [boundPort]).
+ * [port] 0 picks a free port (see [boundPort]). [stop] blocks for up to ~1.2 s (grace period +
+ * timeout): call it off the main thread.
  */
 class RelayWebSocketServer(
     private val port: Int = RELAY_WS_PORT,

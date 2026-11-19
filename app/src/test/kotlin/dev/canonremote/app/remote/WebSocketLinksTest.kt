@@ -3,7 +3,18 @@ package dev.canonremote.app.remote
 import dev.canonremote.core.remote.Incoming
 import dev.canonremote.core.remote.Message
 import dev.canonremote.core.remote.MessageChannel
+import dev.canonremote.core.remote.ProtocolException
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocketSession
+import io.ktor.websocket.Frame
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.net.ServerSocket
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.first
@@ -119,6 +130,34 @@ class WebSocketLinksTest {
     }
 
     @Test
+    fun handlerReturningImmediatelyKeepsSessionOpenForRelayLikeUse() = runBlocking {
+        // Production shape: onClient (RelayServer.accept) returns at once; another coroutine reads
+        // Hello, then sends Rejected and closes.
+        val worker = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val server = RelayWebSocketServer(port = 0) { ch ->
+            worker.launch {
+                val first = ch.incoming.first()
+                assertTrue(first is Incoming.Msg && first.message is Message.Hello)
+                ch.send(Message.Rejected("Relais occupé"))
+                ch.close()
+            }
+        }
+        server.start()
+        try {
+            withTimeout(10_000) {
+                val client = connectWebSocket(host = "127.0.0.1", port = server.boundPort())
+                client.send(Message.Hello(protocol = 1, token = "123456", clientName = "test"))
+                val items = client.incoming.toList()
+                assertEquals(listOf<Message>(Message.Rejected("Relais occupé")), items.map { (it as Incoming.Msg).message })
+                client.close()
+            }
+        } finally {
+            server.stop()
+            worker.cancel()
+        }
+    }
+
+    @Test
     fun invalidTextFrameFailsIncoming() = runBlocking {
         val failure = CompletableDeferred<Throwable?>()
         val server = RelayWebSocketServer(port = 0) { ch ->
@@ -126,15 +165,17 @@ class WebSocketLinksTest {
             ch.close()
         }
         server.start()
+        val raw = HttpClient(CIO) { install(WebSockets) }
         try {
             withTimeout(10_000) {
-                val client = connectWebSocket(host = "127.0.0.1", port = server.boundPort())
-                (client as WebSocketChannel).sendRawText("not json")
+                val session = raw.webSocketSession(host = "127.0.0.1", port = server.boundPort(), path = RELAY_WS_PATH)
+                session.send(Frame.Text("not json"))
                 val e = failure.await()
-                assertTrue("expected ProtocolException, got $e", e is dev.canonremote.core.remote.ProtocolException)
-                client.close()
+                assertTrue("expected ProtocolException, got $e", e is ProtocolException)
+                session.cancel()
             }
         } finally {
+            raw.close()
             server.stop()
         }
     }

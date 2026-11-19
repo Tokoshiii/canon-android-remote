@@ -13,11 +13,15 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -38,53 +42,82 @@ private fun BluetoothSocket.toChannel(): MessageChannel = StreamMessageChannel(
 /**
  * Relay-side RFCOMM server. [start] listens with [RELAY_UUID] / [RELAY_BT_SERVICE_NAME] and accepts
  * clients on [Dispatchers.IO]; each socket is wrapped in a [StreamMessageChannel] and handed to
- * [onClient] (in its own coroutine). [stop] closes the server socket (already accepted channels
- * stay with their owner).
+ * [onClient] in its own coroutine, independent of the accept loop: [stop] closes the server socket
+ * only, already accepted channels stay with their owner.
+ *
+ * [running] is true while the accept loop listens. The loop also ends by itself (Bluetooth turned
+ * off, server socket error): [running] becomes false, [onStopped] is called with the error, and
+ * [start] can be called again.
  *
  * Callers must hold BLUETOOTH_CONNECT.
  */
 @SuppressLint("MissingPermission")
 class BluetoothRelayServer(
     private val adapter: BluetoothAdapter,
+    private val onStopped: (error: Throwable?) -> Unit = {},
     private val onClient: suspend (MessageChannel) -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: BluetoothServerSocket? = null
     private var acceptJob: Job? = null
+    private val _running = MutableStateFlow(false)
+    val running: StateFlow<Boolean> = _running.asStateFlow()
 
     /** Throws [IOException] when Bluetooth is off or the service can't be registered. */
     @Synchronized
     fun start() {
-        if (acceptJob != null) return
+        if (acceptJob?.isActive == true) return
         val ss = adapter.listenUsingRfcommWithServiceRecord(RELAY_BT_SERVICE_NAME, RELAY_UUID)
         serverSocket = ss
-        acceptJob = scope.launch {
-            while (isActive) {
-                val socket = try {
-                    ss.accept()
-                } catch (e: IOException) {
-                    break // server socket closed (stop) or Bluetooth turned off
-                }
-                val channel = socket.toChannel()
-                launch {
-                    try {
-                        onClient(channel)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        channel.close()
+        _running.value = true
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            var error: Throwable? = null
+            try {
+                while (isActive) {
+                    val socket = ss.accept()
+                    val channel = socket.toChannel()
+                    scope.launch {
+                        try {
+                            onClient(channel)
+                        } catch (e: CancellationException) {
+                            channel.close()
+                            throw e
+                        } catch (e: Throwable) {
+                            channel.close()
+                        }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                error = e // server socket closed (stop), Bluetooth turned off, ...
+            } finally {
+                val current = synchronized(this@BluetoothRelayServer) {
+                    val mine = acceptJob === coroutineContext[Job]
+                    if (mine) {
+                        runCatching { ss.close() }
+                        serverSocket = null
+                        acceptJob = null
+                        _running.value = false
+                    }
+                    mine
+                }
+                if (current) runCatching { onStopped(error) }
             }
         }
+        acceptJob = job
+        job.start()
     }
 
+    /** Closes the server socket; [onStopped] is not called for an explicit stop. */
     @Synchronized
     fun stop() {
+        val job = acceptJob
+        acceptJob = null // the ending loop sees it is no longer current
         runCatching { serverSocket?.close() }
         serverSocket = null
-        acceptJob?.cancel()
-        acceptJob = null
+        job?.cancel()
+        _running.value = false
     }
 
     /** Stops and releases the server's coroutine scope; the instance can't be restarted. */
@@ -114,7 +147,7 @@ suspend fun connectBluetooth(device: BluetoothDevice): MessageChannel {
                 try {
                     socket.connect()
                     cont.resume(Unit)
-                } catch (e: IOException) {
+                } catch (e: Throwable) {
                     cont.resumeWithException(e)
                 }
             }

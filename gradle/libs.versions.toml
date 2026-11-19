@@ -11,6 +11,7 @@ serialization = "1.7.3"
 ktor = "3.0.3"
 zxing = "3.5.3"
 codeScanner = "16.1.0"
+slf4j = "2.0.16"
 
 [libraries]
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
@@ -33,6 +34,7 @@ ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-client-websockets = { module = "io.ktor:ktor-client-websockets", version.ref = "ktor" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 play-services-code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version.ref = "codeScanner" }
+slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
