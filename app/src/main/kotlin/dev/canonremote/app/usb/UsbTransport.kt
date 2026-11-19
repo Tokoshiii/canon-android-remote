@@ -20,37 +20,43 @@ class UsbTransport(
     override val name: String = "USB"
 
     private var buffer = ByteArray(RECEIVE_BUFFER_SIZE)
+    private var pending = ByteArray(0)
 
     override suspend fun send(bytes: ByteArray) = withContext(Dispatchers.IO) {
         var offset = 0
         while (offset < bytes.size) {
             val chunk = minOf(SEND_CHUNK_SIZE, bytes.size - offset)
             val n = connection.bulkTransfer(bulkOut, bytes, offset, chunk, TIMEOUT_MS)
-            if (n < 0) throw IOException("USB: transfert échoué")
+            if (n <= 0) throw IOException("USB: transfert échoué")
             offset += n
         }
     }
 
     override suspend fun receive(): ByteArray = withContext(Dispatchers.IO) {
-        var n = connection.bulkTransfer(bulkIn, buffer, 0, buffer.size, TIMEOUT_MS)
-        if (n < 0) throw IOException("USB: transfert échoué")
-        while (n < 4) {
-            val m = connection.bulkTransfer(bulkIn, buffer, n, buffer.size - n, TIMEOUT_MS)
-            if (m < 0) throw IOException("USB: transfert échoué")
-            n += m
+        var n = 0
+        if (pending.isNotEmpty()) {
+            pending.copyInto(buffer, 0)
+            n = pending.size
+            pending = ByteArray(0)
         }
+        if (n == 0) n = read(0, buffer.size)
+        while (n < 4) n += read(n, buffer.size - n)
         val total = ((buffer[0].toLong() and 0xFF) or
             ((buffer[1].toLong() and 0xFF) shl 8) or
             ((buffer[2].toLong() and 0xFF) shl 16) or
             ((buffer[3].toLong() and 0xFF) shl 24)).toInt()
         if (total < 12 || total > MAX_CONTAINER_SIZE) throw IOException("USB: longueur de conteneur invalide ($total)")
         if (total > buffer.size) buffer = buffer.copyOf(total)
-        while (n < total) {
-            val m = connection.bulkTransfer(bulkIn, buffer, n, buffer.size - n, TIMEOUT_MS)
-            if (m < 0) throw IOException("USB: transfert échoué")
-            n += m
-        }
+        while (n < total) n += read(n, total - n)
+        // A transfer may run into the next container: keep the surplus for the next receive().
+        if (n > total) pending = buffer.copyOfRange(total, n)
         buffer.copyOf(total)
+    }
+
+    private fun read(offset: Int, length: Int): Int {
+        val m = connection.bulkTransfer(bulkIn, buffer, offset, length, TIMEOUT_MS)
+        if (m < 0) throw IOException("USB: transfert échoué")
+        return m
     }
 
     override fun close() {

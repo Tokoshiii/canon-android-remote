@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import dev.canonremote.app.ui.CameraActions
 import dev.canonremote.app.usb.UsbConnector
 import dev.canonremote.app.usb.UsbStatus
+import dev.canonremote.app.usb.UsbTransport
 import dev.canonremote.core.CameraSetting
 import dev.canonremote.core.CameraState
 import dev.canonremote.core.CanonCamera
@@ -86,19 +87,29 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
     }
 
+    private var transport: UsbTransport? = null
+    private var opening = false
+
     fun connect() {
-        if (cameraState.value.status != ConnectionStatus.DISCONNECTED) return
+        if (opening || cameraState.value.status != ConnectionStatus.DISCONNECTED) return
         connector.requestPermission { device ->
+            if (opening || cameraState.value.status != ConnectionStatus.DISCONNECTED) return@requestPermission
+            opening = true
             viewModelScope.launch {
-                val transport = withContext(Dispatchers.IO) { connector.open(device) }
-                if (transport == null) {
+              try {
+                val opened = withContext(Dispatchers.IO) { connector.open(device) }
+                if (opened == null) {
                     log.error("Impossible d'ouvrir l'interface USB")
                     errorChannel.trySend("Impossible d'ouvrir l'appareil en USB")
                     return@launch
                 }
-                val cam = CanonCamera(transport, log, viewModelScope)
+                transport = opened
+                val cam = CanonCamera(opened, log, viewModelScope)
                 camera.value = cam
                 cam.connect()
+              } finally {
+                opening = false
+              }
             }
         }
     }
@@ -136,6 +147,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onCleared() {
+        try {
+            transport?.close()
+        } catch (_: Exception) {
+        }
         connector.close()
         super.onCleared()
     }
