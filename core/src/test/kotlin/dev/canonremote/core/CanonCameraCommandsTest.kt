@@ -78,11 +78,25 @@ class CanonCameraCommandsTest {
     }
 
     @Test fun shootResetsBusyOnError() = runTest {
-        script { cmd -> if (cmd.code == 0x9129) t.respond(cmd, code = PtpResponse.DEVICE_BUSY) else null }
+        script { cmd -> if (cmd.code == 0x9128) t.respond(cmd, code = PtpResponse.DEVICE_BUSY) else null }
         val cam = camera().connectedAndClear()
         assertFalse(cam.shoot())
+        assertTrue(commands().none { it.code == 0x9129 })
         assertFalse(cam.state.value.busy)
         assertTrue(cam.state.value.lastError!!.contains("0x2019"))
+    }
+
+    @Test fun shootReleasesShutterWhenSecondPressFails() = runTest {
+        script { cmd ->
+            if (cmd.code == 0x9128 && cmd.params == listOf(2, 0)) t.respond(cmd, code = PtpResponse.DEVICE_BUSY) else null
+        }
+        val cam = camera().connectedAndClear()
+        assertFalse(cam.shoot())
+        assertEquals(
+            listOf(0x9128 to listOf(1, 0), 0x9128 to listOf(2, 0), 0x9129 to listOf(1)),
+            commands().map { it.code to it.params },
+        )
+        assertFalse(cam.state.value.busy)
     }
 
     @Test fun secondShootWhileBusyIsIgnored() = runTest {

@@ -12,6 +12,8 @@ import dev.canonremote.ptp.parseCanonEvents
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,13 +39,13 @@ class CanonCamera(
     private val _liveViewFrames = MutableStateFlow<ByteArray?>(null)
     val liveViewFrames: StateFlow<ByteArray?> = _liveViewFrames.asStateFlow()
 
-    private var eventLoop: Job? = null
-    private var liveViewLoop: Job? = null
+    @Volatile private var eventLoop: Job? = null
+    @Volatile private var liveViewLoop: Job? = null
     private val loggedUnknownTypes = mutableSetOf<Int>()
 
     /** Guards connect/disconnect/live view start-stop/failure handling; [generation] invalidates stale failures. */
     private val lifecycle = Mutex()
-    private var generation = 0
+    @Volatile private var generation = 0
     private val shooting = AtomicBoolean(false)
 
     suspend fun connect() = lifecycle.withLock {
@@ -139,13 +141,31 @@ class CanonCamera(
         try {
             return command("Déclenchement") {
                 session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(1, 0))
-                session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(2, 0))
-                session.executeOk(CanonOp.REMOTE_RELEASE_OFF, listOf(2))
-                session.executeOk(CanonOp.REMOTE_RELEASE_OFF, listOf(1))
+                // Once the shutter is pressed, always release it, even if a later step fails.
+                var secondPressed = false
+                try {
+                    session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(2, 0))
+                    secondPressed = true
+                } finally {
+                    withContext(NonCancellable) {
+                        if (secondPressed) releaseBestEffort(2)
+                        releaseBestEffort(1)
+                    }
+                }
             }
         } finally {
             _state.update { it.copy(busy = false) }
             shooting.set(false)
+        }
+    }
+
+    private suspend fun releaseBestEffort(param: Int) {
+        try {
+            session.executeOk(CanonOp.REMOTE_RELEASE_OFF, listOf(param))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("RemoteReleaseOff($param) ignoré: ${e.message}")
         }
     }
 
