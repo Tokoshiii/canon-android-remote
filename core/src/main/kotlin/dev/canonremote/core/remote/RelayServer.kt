@@ -1,0 +1,174 @@
+package dev.canonremote.core.remote
+
+import dev.canonremote.core.CameraController
+import dev.canonremote.core.LogBus
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+enum class LinkKind { WIFI, BLUETOOTH }
+
+data class RelayClient(val name: String, val link: LinkKind)
+
+/**
+ * Serves one remote at a time over [MessageChannel]s, forwarding its commands to [camera] and
+ * pushing camera state (and, on Wi-Fi, live view frames) back.
+ *
+ * When a session ends (channel error or EOF, [linkTimeoutMs] without any incoming message,
+ * rejected handshake) the channel is closed and the camera is left untouched; commands already
+ * running on the camera complete in [scope] even if their result can no longer be delivered.
+ */
+class RelayServer(
+    private val camera: CameraController,
+    private val log: LogBus,
+    private val scope: CoroutineScope,
+    private val pairingCode: String,
+    private val pingIntervalMs: Long = 2000,
+    private val linkTimeoutMs: Long = 6000,
+) {
+    private val _clients = MutableStateFlow<RelayClient?>(null)
+    val clients: StateFlow<RelayClient?> = _clients.asStateFlow()
+
+    /** Starts a session on [channel]; returns immediately. */
+    fun accept(channel: MessageChannel, link: LinkKind) {
+        scope.launch { runSession(channel, link) }
+    }
+
+    private suspend fun runSession(channel: MessageChannel, link: LinkKind) {
+        var client: RelayClient? = null
+        try {
+            coroutineScope {
+                val end = CompletableDeferred<Unit>()
+                fun stop() { end.complete(Unit) }
+
+                /** Child that ends the session when it finishes or fails (except on cancellation). */
+                fun child(block: suspend () -> Unit) = launch {
+                    try {
+                        block()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        if (!end.isCompleted) log.warn("Liaison télécommande interrompue : ${e.message ?: e::class.simpleName}")
+                    }
+                    stop()
+                }
+
+                // Link watchdog: restarted by every incoming item.
+                val activity = MutableStateFlow(0L)
+                launch {
+                    activity.collectLatest {
+                        delay(linkTimeoutMs)
+                        if (!end.isCompleted) log.warn("Télécommande : aucune réponse depuis $linkTimeoutMs ms")
+                        stop()
+                    }
+                }
+
+                fun startStreams() {
+                    child { camera.state.collect { channel.send(Message.StateMsg(it.toRemote())) } }
+                    child {
+                        while (true) {
+                            delay(pingIntervalMs)
+                            channel.send(Message.Ping)
+                        }
+                    }
+                    if (link != LinkKind.BLUETOOTH) {
+                        child { camera.liveViewFrames.filterNotNull().conflate().collect { channel.sendJpeg(it) } }
+                    }
+                }
+
+                child {
+                    channel.incoming.collect { item ->
+                        if (end.isCompleted) return@collect
+                        activity.update { it + 1 }
+                        val msg = (item as? Incoming.Msg)?.message ?: return@collect
+                        if (client == null) {
+                            if (msg !is Message.Hello) {
+                                log.warn("Télécommande : message inattendu avant Hello")
+                                stop()
+                                return@collect
+                            }
+                            val reason = handshake(msg, link)
+                            if (reason != null) {
+                                log.warn("Télécommande « ${msg.clientName} » refusée : $reason")
+                                channel.send(Message.Rejected(reason))
+                                stop()
+                                return@collect
+                            }
+                            client = RelayClient(msg.clientName, link)
+                            log.info("Télécommande connectée : ${msg.clientName} (${link.label})")
+                            val s = camera.state.value
+                            channel.send(Message.Welcome(s.model, s.serial))
+                            startStreams()
+                            return@collect
+                        }
+                        when (msg) {
+                            Message.Ping -> channel.send(Message.Pong)
+                            is Message.Command -> scope.launch { execute(channel, msg, link) }
+                            else -> Unit // Pong (timer already reset) or unexpected: ignored
+                        }
+                    }
+                }
+
+                end.await()
+                coroutineContext.cancelChildren()
+            }
+        } finally {
+            channel.close()
+            client?.let {
+                _clients.compareAndSet(it, null)
+                log.info("Télécommande déconnectée")
+            }
+        }
+    }
+
+    /** Returns the rejection reason, or null after claiming the relay for this client. */
+    private fun handshake(hello: Message.Hello, link: LinkKind): String? = when {
+        hello.protocol != MessageCodec.PROTOCOL -> "Version incompatible"
+        link == LinkKind.WIFI && hello.token != pairingCode -> "Code d'appairage incorrect"
+        !_clients.compareAndSet(null, RelayClient(hello.clientName, link)) -> "Relais occupé"
+        else -> null
+    }
+
+    private suspend fun execute(channel: MessageChannel, cmd: Message.Command, link: LinkKind) {
+        val result = try {
+            val action = cmd.action
+            if (action is Action.LiveView && action.on && link == LinkKind.BLUETOOTH) {
+                Message.Result(cmd.id, false, "Live view indisponible en Bluetooth")
+            } else {
+                val ok = when (action) {
+                    is Action.Set -> camera.set(action.setting, action.value)
+                    Action.Shoot -> camera.shoot()
+                    Action.Autofocus -> camera.autofocus()
+                    is Action.Focus -> camera.focus(action.step)
+                    is Action.LiveView -> camera.setLiveView(action.on)
+                }
+                Message.Result(cmd.id, ok)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            log.error("Commande télécommande ${cmd.id} échouée", e)
+            Message.Result(cmd.id, false, e.message ?: e::class.simpleName)
+        }
+        try {
+            channel.send(result)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // link gone: the remote reports the command as unconfirmed
+        }
+    }
+
+    private val LinkKind.label get() = if (this == LinkKind.WIFI) "Wi-Fi" else "Bluetooth"
+}
