@@ -198,6 +198,24 @@ class RelayServerTest {
         )
     }
 
+    @Test fun commandsReachCameraInOrderOneAtATime() = runTest {
+        val h = Harness(this)
+        val r = h.connected()
+        h.camera.commandDelayMs = 1000
+        r.channel.send(Message.Command(1, Action.Set(CameraSetting.ISO, 0x48)))
+        r.channel.send(Message.Command(2, Action.Set(CameraSetting.ISO, 0x50)))
+        runCurrent()
+        advanceTimeBy(500)
+        assertEquals(listOf("set(ISO, 72)"), h.camera.calls) // second waits for the first
+        advanceTimeBy(1000)
+        assertEquals(listOf("set(ISO, 72)", "set(ISO, 80)"), h.camera.calls)
+        advanceTimeBy(1000)
+        assertEquals(
+            listOf(Message.Result(1, true), Message.Result(2, true)),
+            r.messages.filterIsInstance<Message.Result>(),
+        )
+    }
+
     @Test fun liveViewCommandForwardedOnWifi() = runTest {
         val h = Harness(this)
         val r = h.connected()

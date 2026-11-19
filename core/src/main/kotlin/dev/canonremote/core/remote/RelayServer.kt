@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,7 +28,7 @@ data class RelayClient(val name: String, val link: LinkKind)
  *
  * When a session ends (channel error or EOF, [linkTimeoutMs] without any incoming message,
  * rejected handshake) the channel is closed and the camera is left untouched; commands already
- * running on the camera complete in [scope] even if their result can no longer be delivered.
+ * received are still executed (in order) even if their result can no longer be delivered.
  */
 class RelayServer(
     private val camera: CameraController,
@@ -39,6 +40,19 @@ class RelayServer(
 ) {
     private val _clients = MutableStateFlow<RelayClient?>(null)
     val clients: StateFlow<RelayClient?> = _clients.asStateFlow()
+
+    private class QueuedCommand(val channel: MessageChannel, val cmd: Message.Command, val link: LinkKind)
+
+    /**
+     * Commands of all sessions, executed one at a time in arrival order by a single worker in
+     * [scope]: it outlives sessions, so a command already received still reaches the camera
+     * after a link loss (only its Result is lost).
+     */
+    private val commands = Channel<QueuedCommand>(Channel.UNLIMITED)
+
+    init {
+        scope.launch { for (q in commands) execute(q.channel, q.cmd, q.link) }
+    }
 
     /** Starts a session on [channel]; returns immediately. */
     fun accept(channel: MessageChannel, link: LinkKind) {
@@ -52,16 +66,20 @@ class RelayServer(
                 val end = CompletableDeferred<Unit>()
                 fun stop() { end.complete(Unit) }
 
-                /** Child that ends the session when it finishes or fails (except on cancellation). */
-                fun child(block: suspend () -> Unit) = launch {
+                /**
+                 * Session child: a failure (other than cancellation) ends the session, and so does
+                 * normal completion when [endsSession].
+                 */
+                fun child(endsSession: Boolean = true, block: suspend () -> Unit) = launch {
                     try {
                         block()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
                         if (!end.isCompleted) log.warn("Liaison télécommande interrompue : ${e.message ?: e::class.simpleName}")
+                        stop()
                     }
-                    stop()
+                    if (endsSession) stop()
                 }
 
                 // Link watchdog: restarted by every incoming item.
@@ -108,13 +126,16 @@ class RelayServer(
                             client = RelayClient(msg.clientName, link)
                             log.info("Télécommande connectée : ${msg.clientName} (${link.label})")
                             val s = camera.state.value
-                            channel.send(Message.Welcome(s.model, s.serial))
-                            startStreams()
+                            // Off the reader: Welcome first, then the state stream (immediate full state).
+                            child(endsSession = false) {
+                                channel.send(Message.Welcome(s.model, s.serial))
+                                startStreams()
+                            }
                             return@collect
                         }
                         when (msg) {
-                            Message.Ping -> channel.send(Message.Pong)
-                            is Message.Command -> scope.launch { execute(channel, msg, link) }
+                            Message.Ping -> child(endsSession = false) { channel.send(Message.Pong) }
+                            is Message.Command -> commands.trySend(QueuedCommand(channel, msg, link))
                             else -> Unit // Pong (timer already reset) or unexpected: ignored
                         }
                     }
