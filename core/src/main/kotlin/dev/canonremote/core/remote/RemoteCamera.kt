@@ -35,6 +35,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * On link loss (channel error/EOF, or [linkTimeoutMs] without any incoming item) the channel is
  * closed, pending commands complete false with « <action> non confirmé — vérifie l'appareil », and
  * new connections are attempted every second for [reconnectWindowMs]. A rejection stops everything.
+ *
+ * [connect] should be cancellable: each call is bounded by [linkTimeoutMs] and cancelled after it;
+ * a channel still returned after the timeout (non-cancellable factory) is closed and discarded.
  */
 class RemoteCamera(
     private val connect: suspend () -> MessageChannel,
@@ -60,6 +63,8 @@ class RemoteCamera(
     private var generation = 0
     private var session: Session? = null
     private var reconnectJob: Job? = null
+    /** Relay lastError last seen by the previous session, so a reconnection mirrors only changes. */
+    private var carriedRelayError: String? = null
     private val nextId = AtomicInteger()
 
     private class Pending(val label: String, val result: CompletableDeferred<Message.Result?>)
@@ -97,11 +102,12 @@ class RemoteCamera(
      * Failure → DISCONNECTED with the rejection reason or « Relais injoignable » (no retry).
      */
     suspend fun connect() {
-        val gen = synchronized(lock) {
-            stopLocked()
+        val (gen, old) = synchronized(lock) {
+            val old = stopLocked()
             _state.value = CameraState(status = ConnectionStatus.CONNECTING)
-            generation
+            generation to old
         }
+        old?.close()
         when (val r = attempt(gen)) {
             Attempt.Ok -> Unit
             is Attempt.Rejected -> fail(gen, r.reason)
@@ -110,35 +116,48 @@ class RemoteCamera(
     }
 
     override suspend fun disconnect() {
-        synchronized(lock) {
-            stopLocked()
+        val old = synchronized(lock) {
+            val old = stopLocked()
             _state.value = CameraState()
+            old
         }
+        old?.close()
     }
 
-    /** Ends the current session and reconnection without reporting; must hold [lock]. */
-    private fun stopLocked() {
+    /**
+     * Ends the current session and reconnection without reporting; must hold [lock]. Returns the
+     * session's channel, which the caller closes once the lock is released.
+     */
+    private fun stopLocked(): MessageChannel? {
         generation++
+        carriedRelayError = null
         reconnectJob?.cancel()
         reconnectJob = null
-        session?.let { s ->
-            s.stop(End.Local)
-            s.channel.close()
-            s.pending.keys.toList().forEach { id -> s.pending.remove(id)?.result?.complete(null) }
-        }
-        session = null
         _frames.value = null
+        val s = session ?: return null
+        session = null
+        s.stop(End.Local)
+        s.pending.keys.toList().forEach { id -> s.pending.remove(id)?.result?.complete(null) }
+        return s.channel
     }
 
-    private fun fail(gen: Int, error: String) = synchronized(lock) {
+    /** DISCONNECTED with [error]; [keepUnconfirmed] keeps a shown « … non confirmé » warning instead. */
+    private fun fail(gen: Int, error: String, keepUnconfirmed: Boolean = false) = synchronized(lock) {
         if (gen != generation) return@synchronized
         session = null
-        _state.value = _state.value.copy(status = ConnectionStatus.DISCONNECTED, busy = false, lastError = error)
+        _state.update {
+            val shown = it.lastError?.takeIf { e -> keepUnconfirmed && e.endsWith(UNCONFIRMED_SUFFIX) }
+            it.copy(status = ConnectionStatus.DISCONNECTED, busy = false, lastError = shown ?: error)
+        }
     }
 
     private suspend fun attempt(gen: Int): Attempt {
+        var produced: MessageChannel? = null
         val channel = try {
-            withTimeoutOrNull(linkTimeoutMs) { connect.invoke() } ?: return Attempt.Failed
+            withTimeoutOrNull(linkTimeoutMs) { connect.invoke().also { produced = it } } ?: run {
+                produced?.close() // returned after the timeout by a non-cancellable factory
+                return Attempt.Failed
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -146,12 +165,13 @@ class RemoteCamera(
             return Attempt.Failed
         }
         val s = Session(channel, gen)
-        synchronized(lock) {
-            if (gen != generation) {
-                channel.close()
-                return Attempt.Failed
-            }
-            session = s
+        val current = synchronized(lock) {
+            if (gen == generation) session = s
+            gen == generation
+        }
+        if (!current) {
+            channel.close()
+            return Attempt.Failed
         }
         var ok = false
         try {
@@ -257,6 +277,7 @@ class RemoteCamera(
     private fun onWelcome(s: Session, w: Message.Welcome) {
         publish(s) {
             s.welcomed = true
+            s.relayError = carriedRelayError
             // Fresh state, but an unconfirmed command from before a reconnection stays reported.
             val kept = _state.value.lastError?.takeIf { it != LINK_LOST }
             _state.value = CameraState(ConnectionStatus.CONNECTED, model = w.model, serial = w.serial, lastError = kept)
@@ -291,6 +312,7 @@ class RemoteCamera(
                 return
             }
             session = null
+            carriedRelayError = s.relayError
             _frames.value = null
             val unconfirmed = failPending(s)
             when (end) {
@@ -336,7 +358,7 @@ class RemoteCamera(
             is Attempt.Rejected -> fail(gen, outcome.reason)
             else -> {
                 log.warn("Relais : abandon de la reconnexion")
-                fail(gen, LINK_LOST)
+                fail(gen, LINK_LOST, keepUnconfirmed = true)
             }
         }
         val self = currentCoroutineContext()[Job]
@@ -401,10 +423,11 @@ class RemoteCamera(
         _state.update { it.copy(lastError = null) }
     }
 
-    private fun unconfirmed(label: String) = "$label non confirmé — vérifie l'appareil"
+    private fun unconfirmed(label: String) = "$label$UNCONFIRMED_SUFFIX"
 
     private companion object {
         const val RETRY_DELAY_MS = 1000L
+        const val UNCONFIRMED_SUFFIX = " non confirmé — vérifie l'appareil"
         const val LINK_LOST = "Connexion au relais perdue"
         const val UNREACHABLE = "Relais injoignable"
         const val BUSY = "Relais occupé"

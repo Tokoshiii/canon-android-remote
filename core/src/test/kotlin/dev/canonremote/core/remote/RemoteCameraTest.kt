@@ -10,12 +10,15 @@ import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -521,6 +524,62 @@ class RemoteCameraTest {
         assertEquals(ConnectionStatus.CONNECTED, h.remote.state.value.status)
         h.remote.disconnect()
         assertTrue(h.remoteEnds[1].closed)
+    }
+
+    // ---- review fixes ----
+
+    @Test fun giveUpKeepsUnconfirmedWarning() = runTest {
+        val h = EndToEnd(this)
+        h.remote.connect()
+        runCurrent()
+        h.camera.commandDelayMs = 3000
+        val shot = async { h.remote.shoot() }
+        runCurrent()
+        h.reachable = false
+        h.channels.last().fail(IOException("Wi-Fi coupé"))
+        runCurrent()
+        assertFalse(shot.await())
+        advanceTimeBy(16_000)
+        assertEquals(ConnectionStatus.DISCONNECTED, h.remote.state.value.status)
+        assertEquals("Déclenchement non confirmé — vérifie l'appareil", h.remote.state.value.lastError)
+    }
+
+    @Test fun clearedRelayErrorNotResurrectedOnReconnect() = runTest {
+        val h = Scripted(this)
+        val withError = camState.copy(lastError = "Déclenchement refusé : 0x2019")
+        h.onHello = { s, _ ->
+            s.channel.send(Message.Welcome("Canon EOS 90D", "123"))
+            s.channel.send(Message.StateMsg(withError.toRemote()))
+        }
+        h.remote.connect()
+        runCurrent()
+        assertEquals("Déclenchement refusé : 0x2019", h.remote.state.value.lastError)
+        h.remote.clearError()
+        h.sessions.single().channel.close()
+        runCurrent()
+        assertEquals(2, h.sessions.size)
+        assertEquals(ConnectionStatus.CONNECTED, h.remote.state.value.status)
+        assertNull(h.remote.state.value.lastError)
+        // a different relay error is still mirrored
+        h.sessions[1].channel.send(Message.StateMsg(camState.copy(lastError = "Autre").toRemote()))
+        runCurrent()
+        assertEquals("Autre", h.remote.state.value.lastError)
+    }
+
+    @Test fun lateChannelFromNonCancellableFactoryIsClosed() = runTest {
+        val late = CloseProbe(MemoryChannel.pair().first)
+        val remote = RemoteCamera(
+            connect = { withContext(NonCancellable) { delay(7000) }; late },
+            link = LinkKind.WIFI,
+            token = CODE,
+            clientName = "Pixel",
+            log = LogBus(),
+            scope = backgroundScope,
+        )
+        remote.connect()
+        assertTrue(late.closed)
+        assertEquals(ConnectionStatus.DISCONNECTED, remote.state.value.status)
+        assertEquals("Relais injoignable", remote.state.value.lastError)
     }
 
     private companion object { const val CODE = "123456" }
