@@ -9,10 +9,14 @@ sealed interface CanonEvent {
 
 private const val RECORD_HEADER = 8
 
+private const val DATA_TYPE_U32_LIST = 3
+
 /**
  * Parses a Canon GetEvent payload: records of `size u32, type u32, body (size-8)`.
- * Ends at a type-0 record or end of data. Never throws: a bad record yields a
- * [CanonEvent.Malformed] (offset = start of that record) and parsing stops.
+ * Ends at a type-0 record or end of data. Never throws. A record whose size is invalid
+ * (< 8 or beyond the data) yields a [CanonEvent.Malformed] and stops parsing; a record whose
+ * size is valid but whose body cannot be decoded yields a [CanonEvent.Malformed] (offset =
+ * start of that record) and parsing continues with the next record.
  */
 fun parseCanonEvents(data: ByteArray): List<CanonEvent> {
     val events = mutableListOf<CanonEvent>()
@@ -27,23 +31,10 @@ fun parseCanonEvents(data: ByteArray): List<CanonEvent> {
             return events
         }
         val body = ByteReader(data.copyOfRange(offset + RECORD_HEADER, offset + size))
-        try {
-            events += when (type) {
-                CanonEventCode.PROP_VALUE_CHANGED -> CanonEvent.PropValueChanged(body.u32(), body.u32())
-                CanonEventCode.AVAILABLE_LIST_CHANGED -> {
-                    val prop = body.u32()
-                    body.u32() // data type
-                    val count = body.u32()
-                    if (count < 0 || count > body.remaining / 4) {
-                        throw PtpFormatException("count $count does not fit in record body")
-                    }
-                    CanonEvent.AvailableValuesChanged(prop, List(count) { body.u32() })
-                }
-                else -> CanonEvent.Unknown(type, size)
-            }
+        events += try {
+            decodeRecord(type, size, body)
         } catch (e: PtpFormatException) {
-            events += CanonEvent.Malformed(offset, e.message ?: "malformed record")
-            return events
+            CanonEvent.Malformed(offset, e.message ?: "malformed record")
         }
         offset += size
     }
@@ -51,4 +42,26 @@ fun parseCanonEvents(data: ByteArray): List<CanonEvent> {
         events += CanonEvent.Malformed(offset, "trailing ${data.size - offset} bytes shorter than a header")
     }
     return events
+}
+
+private fun decodeRecord(type: Int, size: Int, body: ByteReader): CanonEvent = when (type) {
+    CanonEventCode.PROP_VALUE_CHANGED -> {
+        val prop = body.u32()
+        if (body.remaining < 4) throw PtpFormatException("property 0x%04X: no 4-byte value".format(prop))
+        CanonEvent.PropValueChanged(prop, body.u32())
+    }
+    CanonEventCode.AVAILABLE_LIST_CHANGED -> {
+        val prop = body.u32()
+        val dataType = body.u32()
+        if (dataType != DATA_TYPE_U32_LIST) {
+            CanonEvent.Unknown(type, size)
+        } else {
+            val count = body.u32()
+            if (count < 0 || count > body.remaining / 4) {
+                throw PtpFormatException("count $count does not fit in record body")
+            }
+            CanonEvent.AvailableValuesChanged(prop, List(count) { body.u32() })
+        }
+    }
+    else -> CanonEvent.Unknown(type, size)
 }

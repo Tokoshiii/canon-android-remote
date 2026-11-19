@@ -70,11 +70,31 @@ class CanonEventsTest {
     }
 
     @Test
-    fun availableListWithOverflowingCountIsMalformed() {
-        val data = record(CanonEventCode.AVAILABLE_LIST_CHANGED, iso, 3, 1000)
-        assertEquals(20, data.size)
-        val events = parseCanonEvents(data)
-        assertEquals(1, events.size)
+    fun availableListWithOverflowingCountIsMalformedAndParsingContinues() {
+        val bad = record(CanonEventCode.AVAILABLE_LIST_CHANGED, iso, 3, 1000)
+        assertEquals(20, bad.size)
+        val events = parseCanonEvents(bad + propChanged())
+        assertEquals(2, events.size)
         assertEquals(0, (events[0] as CanonEvent.Malformed).offset)
+        assertEquals(CanonEvent.PropValueChanged(iso, 0x58), events[1])
+    }
+
+    @Test
+    fun shortPropChangedBodyIsMalformedAndParsingContinues() {
+        val short = record(CanonEventCode.PROP_VALUE_CHANGED, 0xD406) // no value: 12 bytes
+        val events = parseCanonEvents(short + propChanged() + terminator)
+        assertEquals(2, events.size)
+        assertEquals(0, (events[0] as CanonEvent.Malformed).offset)
+        assertEquals(CanonEvent.PropValueChanged(iso, 0x58), events[1])
+    }
+
+    @Test
+    fun availableListWithOtherDataTypeIsSkippedAsUnknown() {
+        val other = record(CanonEventCode.AVAILABLE_LIST_CHANGED, 0xD402, 1, 99)
+        val events = parseCanonEvents(other + propChanged())
+        assertEquals(
+            listOf(CanonEvent.Unknown(CanonEventCode.AVAILABLE_LIST_CHANGED, 20), CanonEvent.PropValueChanged(iso, 0x58)),
+            events,
+        )
     }
 }
