@@ -1,6 +1,5 @@
 package dev.canonremote.core
 
-import dev.canonremote.ptp.ByteWriter
 import dev.canonremote.ptp.CanonEventCode
 import dev.canonremote.ptp.CanonProp
 import dev.canonremote.ptp.PtpContainer
@@ -20,47 +19,17 @@ class CanonCameraConnectTest {
     private val t = FakeTransport()
     private val log = LogBus()
 
-    private fun ByteWriter.ptpString(s: String) {
-        u8(s.length + 1)
-        s.forEach { u16(it.code) }
-        u16(0)
-    }
-
-    private fun deviceInfo(): ByteArray {
-        val w = ByteWriter()
-        w.u16(100); w.u32(0xB); w.u16(100)
-        w.ptpString("canon.com: 1.0")
-        w.u16(0)
-        repeat(4) { w.u32(0) }
-        w.u32(0)
-        w.ptpString("Canon Inc.")
-        w.ptpString("Canon EOS 90D")
-        w.ptpString("3-1.0.0")
-        w.ptpString("0123456789")
-        return w.toByteArray()
-    }
-
-    private fun record(type: Int, vararg body: Int): ByteArray {
-        val w = ByteWriter()
-        w.u32(8 + body.size * 4)
-        w.u32(type)
-        body.forEach { w.u32(it) }
-        return w.toByteArray()
-    }
-
-    private val terminator = byteArrayOf(8, 0, 0, 0, 0, 0, 0, 0)
-
-    private fun isoValue(v: Int) = record(CanonEventCode.PROP_VALUE_CHANGED, CanonProp.ISO, v) + terminator
+    private fun isoValue(v: Int) = testRecord(CanonEventCode.PROP_VALUE_CHANGED, CanonProp.ISO, v) + TERMINATOR
     private fun isoList(vararg v: Int) =
-        record(CanonEventCode.AVAILABLE_LIST_CHANGED, CanonProp.ISO, 3, v.size, *v)
+        testRecord(CanonEventCode.AVAILABLE_LIST_CHANGED, CanonProp.ISO, 3, v.size, *v)
 
     /** Handler answering DeviceInfo and serving [events] in order for successive GetEvent calls. */
     private fun script(vararg events: ByteArray) {
         val queue = ArrayDeque(events.toList())
         t.handler = { cmd ->
             when (cmd.code) {
-                PtpOp.GET_DEVICE_INFO -> t.respond(cmd, data = deviceInfo())
-                0x9116 -> t.respond(cmd, data = queue.removeFirstOrNull() ?: terminator)
+                PtpOp.GET_DEVICE_INFO -> t.respond(cmd, data = testDeviceInfo())
+                0x9116 -> t.respond(cmd, data = queue.removeFirstOrNull() ?: TERMINATOR)
                 else -> t.respond(cmd)
             }
         }
@@ -99,7 +68,7 @@ class CanonCameraConnectTest {
     }
 
     @Test fun pollingAppliesLaterChanges() = runTest {
-        script(terminator, isoValue(0x48))
+        script(TERMINATOR, isoValue(0x48))
         val cam = camera()
         cam.connect()
         advanceTimeBy(250)
@@ -107,8 +76,8 @@ class CanonCameraConnectTest {
     }
 
     @Test fun unknownEventLoggedOncePerType() = runTest {
-        val unknown = record(0xC1A7, 1, 2)
-        script(unknown + terminator, unknown + terminator)
+        val unknown = testRecord(0xC1A7, 1, 2)
+        script(unknown + TERMINATOR, unknown + TERMINATOR)
         val cam = camera()
         cam.connect()
         advanceTimeBy(250)

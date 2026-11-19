@@ -9,6 +9,10 @@ enum class CameraSetting(val prop: Int, val title: String) {
     WHITE_BALANCE(0xD109, "Balance des blancs"),
 }
 
+enum class FocusStep(val code: Int) {
+    NEAR_3(0x0003), NEAR_2(0x0002), NEAR_1(0x0001), FAR_1(0x8001), FAR_2(0x8002), FAR_3(0x8003),
+}
+
 data class SettingState(val current: Int? = null, val available: List<Int> = emptyList())
 
 data class CameraState(
