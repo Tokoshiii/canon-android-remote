@@ -1,5 +1,8 @@
 package dev.canonremote.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,6 +26,7 @@ class MainActivity : ComponentActivity() {
             val frame by viewModel.frame.collectAsStateWithLifecycle()
             val usb by viewModel.usbStatus.collectAsStateWithLifecycle()
             val camera by viewModel.cameraState.collectAsStateWithLifecycle()
+            val logEntries by viewModel.log.entries.collectAsStateWithLifecycle()
             CanonRemoteTheme {
                 MainScreen(
                     controls = controls,
@@ -38,9 +42,23 @@ class MainActivity : ComponentActivity() {
                             onDisconnect = viewModel::disconnect,
                         )
                     },
-                    logs = { LogsScreen() },
+                    logs = {
+                        LogsScreen(
+                            entries = logEntries,
+                            onCopy = ::copyLogs,
+                            onClear = viewModel.log::clear,
+                        )
+                    },
                 )
             }
         }
+    }
+
+    private fun copyLogs() {
+        val header = "Canon Remote ${BuildConfig.VERSION_NAME} — " +
+            "${Build.MANUFACTURER} ${Build.MODEL} — Android ${Build.VERSION.RELEASE}"
+        val text = viewModel.log.export(header)
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard.setPrimaryClip(ClipData.newPlainText("Canon Remote logs", text))
     }
 }
