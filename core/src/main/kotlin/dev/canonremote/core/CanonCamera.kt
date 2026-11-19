@@ -1,0 +1,401 @@
+package dev.canonremote.core
+
+import dev.canonremote.ptp.CanonCaptureDest
+import dev.canonremote.ptp.CanonEvent
+import dev.canonremote.ptp.CanonOp
+import dev.canonremote.ptp.CanonProp
+import dev.canonremote.ptp.CanonValues
+import dev.canonremote.ptp.DeviceInfo
+import dev.canonremote.ptp.PtpOp
+import dev.canonremote.ptp.PtpResponse
+import dev.canonremote.ptp.extractLiveViewJpeg
+import dev.canonremote.ptp.hasCanonEventRecords
+import dev.canonremote.ptp.parseCanonEvents
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
+
+class CanonCamera(
+    private val transport: Transport,
+    private val log: LogBus,
+    private val scope: CoroutineScope,
+    private val pollIntervalMs: Long = 200,
+) {
+    private val session = PtpSession(transport, log)
+    private val _state = MutableStateFlow(CameraState())
+    val state: StateFlow<CameraState> = _state.asStateFlow()
+
+    private val _liveViewFrames = MutableStateFlow<ByteArray?>(null)
+    val liveViewFrames: StateFlow<ByteArray?> = _liveViewFrames.asStateFlow()
+
+    @Volatile private var eventLoop: Job? = null
+    @Volatile private var liveViewLoop: Job? = null
+    private val loggedUnknownTypes = mutableSetOf<Int>()
+
+    /** Guards connect/disconnect/live view start-stop/failure handling; [generation] invalidates stale failures. */
+    private val lifecycle = Mutex()
+    @Volatile private var generation = 0
+    private val shooting = AtomicBoolean(false)
+
+    suspend fun connect() = lifecycle.withLock {
+        if (_state.value.status != ConnectionStatus.DISCONNECTED) return@withLock
+        val gen = ++generation
+        _state.value = CameraState(status = ConnectionStatus.CONNECTING)
+        try {
+            val open = session.execute(PtpOp.OPEN_SESSION, listOf(1))
+            if (!open.isOk && open.responseCode != PtpResponse.SESSION_ALREADY_OPEN) {
+                throw PtpException(open.responseCode, "OpenSession refusé: 0x%04X".format(open.responseCode))
+            }
+            val info = DeviceInfo.decode(session.executeOk(PtpOp.GET_DEVICE_INFO, hexMax = CONNECT_HEX_MAX).data ?: ByteArray(0))
+            log.info("Appareil: ${info.model} (série ${info.serialNumber})")
+            _state.update { it.copy(model = info.model, serial = info.serialNumber) }
+            session.executeOk(CanonOp.SET_REMOTE_MODE, listOf(1))
+            session.executeOk(CanonOp.SET_EVENT_MODE, listOf(1))
+            val initialEvents = pollEvents(hexMax = CONNECT_HEX_MAX)
+            ensureCaptureToCard(initialEvents)
+            _state.update { it.copy(status = ConnectionStatus.CONNECTED) }
+        } catch (e: CancellationException) {
+            _state.value = CameraState()
+            throw e
+        } catch (e: PtpException) {
+            log.error("Échec de la connexion", e)
+            failConnection("Connexion refusée par l'appareil")
+            return@withLock
+        } catch (e: Exception) {
+            log.error("Erreur de transport", e)
+            failConnection("Appareil déconnecté")
+            return@withLock
+        }
+        eventLoop = scope.launch {
+            var lastErrorCode: Int? = null
+            while (isActive) {
+                delay(pollIntervalMs)
+                try {
+                    // Idle polls stay out of the log: only failures (once per code) and polls carrying events.
+                    pollEvents(logIf = { r ->
+                        if (r.isOk) hasCanonEventRecords(r.data) else r.responseCode != lastErrorCode
+                    })
+                    lastErrorCode = null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: PtpException) {
+                    if (e.responseCode != lastErrorCode) log.warn("GetEvent: ${e.message}")
+                    lastErrorCode = e.responseCode
+                } catch (e: Exception) {
+                    handleTransportFailure(gen, e)
+                    return@launch
+                }
+            }
+        }
+    }
+
+    suspend fun disconnect() = lifecycle.withLock {
+        generation++
+        stopLiveViewLoop()
+        if (_state.value.liveView) {
+            try {
+                session.execute(CanonOp.SET_DEVICE_PROP_VALUE_EX, dataOut = CanonValues.setPropPayload(CanonProp.EVF_OUTPUT_DEVICE, 0))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("Arrêt du live view ignoré: ${e.message}")
+            }
+        }
+        val loop = eventLoop
+        loop?.cancel()
+        loop?.join()
+        eventLoop = null
+        try {
+            session.execute(PtpOp.CLOSE_SESSION)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("CloseSession ignoré: ${e.message}")
+        }
+        closeTransport()
+        _liveViewFrames.value = null
+        _state.value = CameraState()
+    }
+
+    fun clearError() {
+        _state.update { it.copy(lastError = null) }
+    }
+
+    suspend fun set(setting: CameraSetting, value: Int): Boolean = command("Réglage ${setting.title}") {
+        session.executeOk(
+            CanonOp.SET_DEVICE_PROP_VALUE_EX,
+            dataOut = CanonValues.setPropPayload(setting.prop, value),
+        )
+    }
+
+    suspend fun shoot(): Boolean {
+        if (_state.value.status != ConnectionStatus.CONNECTED) return false
+        if (!shooting.compareAndSet(false, true)) return false
+        _state.update { it.copy(busy = true) }
+        try {
+            return command("Déclenchement") {
+                session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(1, 0))
+                // Once the shutter is pressed, always release it, even if a later step fails.
+                var secondPressed = false
+                var failure: Throwable? = null
+                try {
+                    session.executeOk(CanonOp.REMOTE_RELEASE_ON, listOf(2, 0))
+                    secondPressed = true
+                } catch (e: Throwable) {
+                    failure = e
+                }
+                val transportError = withContext(NonCancellable) {
+                    val first = if (secondPressed) releaseBestEffort(2) else null
+                    releaseBestEffort(1) ?: first
+                }
+                failure?.let { throw it }
+                transportError?.let { throw it }
+            }
+        } finally {
+            _state.update { it.copy(busy = false) }
+            shooting.set(false)
+        }
+    }
+
+    /** Sends RemoteReleaseOff; PtpException is logged, any other (transport) error is returned for the caller to rethrow. */
+    private suspend fun releaseBestEffort(param: Int): Exception? =
+        try {
+            session.executeOk(CanonOp.REMOTE_RELEASE_OFF, listOf(param))
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PtpException) {
+            log.warn("RemoteReleaseOff($param) ignoré: ${e.message}")
+            null
+        } catch (e: Exception) {
+            e
+        }
+
+    suspend fun autofocus(): Boolean = command("Mise au point automatique") {
+        session.executeOk(CanonOp.DO_AF)
+    }
+
+    suspend fun focus(step: FocusStep): Boolean {
+        if (!_state.value.liveView) return false
+        return command("Mise au point manuelle") { session.executeOk(CanonOp.DRIVE_LENS, listOf(step.code)) }
+    }
+
+    suspend fun setLiveView(on: Boolean): Boolean {
+        if (_state.value.status != ConnectionStatus.CONNECTED) return false
+        val gen = generation
+        return lifecycle.withLock {
+            if (gen != generation || _state.value.status != ConnectionStatus.CONNECTED) return@withLock false
+            if (on == _state.value.liveView) return@withLock true
+            if (on) {
+                val ok = command("Live view", lockHeld = true) {
+                    // As libgphoto2: EVFMode = 1 first (best effort, the property may not exist), then output to PC.
+                    try {
+                        session.executeOk(
+                            CanonOp.SET_DEVICE_PROP_VALUE_EX,
+                            dataOut = CanonValues.setPropPayload(CanonProp.EVF_MODE, 1),
+                        )
+                    } catch (e: PtpException) {
+                        log.warn("EVFMode (0xD1B3) refusé : 0x%04X".format(e.responseCode))
+                    }
+                    session.executeOk(
+                        CanonOp.SET_DEVICE_PROP_VALUE_EX,
+                        dataOut = CanonValues.setPropPayload(CanonProp.EVF_OUTPUT_DEVICE, 2),
+                    )
+                }
+                if (ok && _state.value.status == ConnectionStatus.CONNECTED) {
+                    _state.update { it.copy(liveView = true) }
+                    liveViewLoop = scope.launch { runLiveView(gen) }
+                }
+                ok
+            } else {
+                stopLiveViewLoop()
+                val ok = command("Arrêt du live view", lockHeld = true) {
+                    session.executeOk(
+                        CanonOp.SET_DEVICE_PROP_VALUE_EX,
+                        dataOut = CanonValues.setPropPayload(CanonProp.EVF_OUTPUT_DEVICE, 0),
+                    )
+                }
+                if (_state.value.status == ConnectionStatus.CONNECTED) _state.update { it.copy(liveView = false) }
+                _liveViewFrames.value = null
+                ok
+            }
+        }
+    }
+
+    private suspend fun runLiveView(gen: Int) {
+        var lastErrorCode: Int? = null
+        while (currentCoroutineContext().isActive) {
+            try {
+                // Frames are not logged; only errors other than "not ready/busy", once per code.
+                val r = session.execute(
+                    CanonOp.GET_VIEWFINDER_DATA,
+                    listOf(0x00100000, 0, 0),
+                    hexMax = 0,
+                    logIf = { !it.isOk && !isLiveViewSkip(it.responseCode) && it.responseCode != lastErrorCode },
+                )
+                if (r.isOk) {
+                    lastErrorCode = null
+                    r.data?.let { extractLiveViewJpeg(it) }?.let { _liveViewFrames.value = it }
+                } else if (!isLiveViewSkip(r.responseCode)) {
+                    if (r.responseCode != lastErrorCode) {
+                        log.warn("GetViewFinderData: réponse 0x%04X".format(r.responseCode))
+                    }
+                    lastErrorCode = r.responseCode
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleTransportFailure(gen, e)
+                return
+            }
+            delay(LIVE_VIEW_INTERVAL_MS)
+        }
+    }
+
+    private suspend fun stopLiveViewLoop() {
+        val loop = liveViewLoop
+        loop?.cancel()
+        // Joining is safe: PtpSession transactions are NonCancellable and finish on their own.
+        loop?.join()
+        liveViewLoop = null
+    }
+
+    /** Runs a command when CONNECTED. PtpException -> logged + lastError + false; transport error -> disconnect. */
+    private suspend fun command(action: String, lockHeld: Boolean = false, block: suspend () -> Unit): Boolean {
+        if (_state.value.status != ConnectionStatus.CONNECTED) return false
+        val gen = generation
+        return try {
+            block()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PtpException) {
+            val msg = "%s refusé : 0x%04X".format(action, e.responseCode)
+            log.error(msg)
+            _state.update { it.copy(lastError = msg) }
+            false
+        } catch (e: Exception) {
+            if (lockHeld) {
+                log.error("Erreur de transport", e)
+                failConnection("Appareil déconnecté")
+            } else {
+                handleTransportFailure(gen, e)
+            }
+            false
+        }
+    }
+
+    private fun isLiveViewSkip(code: Int) = code == PtpResponse.CANON_NOT_READY || code == PtpResponse.DEVICE_BUSY
+
+    private suspend fun pollEvents(
+        hexMax: Int = PtpSession.DEFAULT_HEX_MAX,
+        logIf: ((PtpResult) -> Boolean)? = null,
+    ): List<CanonEvent> {
+        val data = session.executeOk(CanonOp.GET_EVENT, hexMax = hexMax, logIf = logIf).data ?: return emptyList()
+        val events = parseCanonEvents(data)
+        _state.update { s -> s.copy(settings = events.fold(s.settings, ::applyEvent)) }
+        return events
+    }
+
+    /**
+     * As libgphoto2: if the initial dump reports the capture destination as host RAM (4), switch it
+     * to the card value (first value of its list other than 4). A refusal is only a warning.
+     */
+    private suspend fun ensureCaptureToCard(events: List<CanonEvent>) {
+        val prop = CanonProp.CAPTURE_DESTINATION
+        val current = events.filterIsInstance<CanonEvent.PropValueChanged>().lastOrNull { it.prop == prop }?.value
+        if (current == null) {
+            log.warn("Destination de capture (0xD11C) absente des événements initiaux")
+            return
+        }
+        if (current != CanonCaptureDest.HOST) {
+            log.info("Destination de capture : carte (0x%X)".format(current))
+            return
+        }
+        val card = events.filterIsInstance<CanonEvent.AvailableValuesChanged>().lastOrNull { it.prop == prop }
+            ?.values?.firstOrNull { it != CanonCaptureDest.HOST }
+        if (card == null) {
+            log.warn("Destination de capture : PC (0x4), aucune valeur « carte » proposée")
+            return
+        }
+        try {
+            session.executeOk(CanonOp.SET_DEVICE_PROP_VALUE_EX, dataOut = CanonValues.setPropPayload(prop, card))
+            log.info("Destination de capture réglée sur la carte (0x%X)".format(card))
+        } catch (e: PtpException) {
+            log.warn("Réglage de la destination de capture refusé : 0x%04X".format(e.responseCode))
+        }
+    }
+
+    private fun applyEvent(
+        settings: Map<CameraSetting, SettingState>,
+        event: CanonEvent,
+    ): Map<CameraSetting, SettingState> {
+        fun update(prop: Int, f: (SettingState) -> SettingState): Map<CameraSetting, SettingState> {
+            val setting = CameraSetting.entries.firstOrNull { it.prop == prop } ?: return settings
+            return settings + (setting to f(settings[setting] ?: SettingState()))
+        }
+        return when (event) {
+            is CanonEvent.PropValueChanged -> update(event.prop) { it.copy(current = event.value) }
+            is CanonEvent.AvailableValuesChanged -> update(event.prop) { it.copy(available = event.values) }
+            is CanonEvent.Unknown -> {
+                if (loggedUnknownTypes.add(event.type)) {
+                    log.ptp("Événement Canon inconnu 0x%04X (%d o)".format(event.type, event.size))
+                }
+                settings
+            }
+            is CanonEvent.Malformed -> {
+                log.warn("Événement Canon malformé à l'offset ${event.offset}: ${event.reason}")
+                settings
+            }
+        }
+    }
+
+    private suspend fun handleTransportFailure(gen: Int, e: Exception) {
+        lifecycle.withLock {
+            if (gen != generation) return@withLock // stale failure from a previous connection
+            log.error("Erreur de transport", e)
+            failConnection("Appareil déconnecté")
+        }
+    }
+
+    /** Must be called with [lifecycle] held. */
+    private fun failConnection(message: String) {
+        generation++
+        val ev = eventLoop
+        val lv = liveViewLoop
+        eventLoop = null
+        liveViewLoop = null
+        ev?.cancel()
+        lv?.cancel()
+        closeTransport()
+        _liveViewFrames.value = null
+        _state.value = CameraState(status = ConnectionStatus.DISCONNECTED, lastError = message)
+    }
+
+    private fun closeTransport() {
+        try {
+            transport.close()
+        } catch (e: Exception) {
+            log.warn("Fermeture du transport ignorée: ${e.message}")
+        }
+    }
+
+    private companion object {
+        const val LIVE_VIEW_INTERVAL_MS = 50L
+        /** Connect-phase payloads (DeviceInfo, initial event dump) are dumped up to this many bytes. */
+        const val CONNECT_HEX_MAX = 8192
+    }
+}
