@@ -12,6 +12,7 @@ import dev.canonremote.app.usb.UsbStatus
 import dev.canonremote.app.usb.UsbTransport
 import dev.canonremote.core.CameraSetting
 import dev.canonremote.core.CameraState
+import dev.canonremote.core.CameraController
 import dev.canonremote.core.CanonCamera
 import dev.canonremote.core.ConnectionStatus
 import dev.canonremote.core.ControlsModel
@@ -40,7 +41,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     val log: LogBus = (app as CanonRemoteApp).log
     private val connector = UsbConnector(app, log)
 
-    private val camera = MutableStateFlow<CanonCamera?>(null)
+    private val camera = MutableStateFlow<CameraController?>(null)
 
     val usbStatus: StateFlow<UsbStatus> = connector.status
 

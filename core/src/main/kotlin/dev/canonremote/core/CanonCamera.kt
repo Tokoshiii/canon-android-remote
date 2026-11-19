@@ -33,13 +33,13 @@ class CanonCamera(
     private val log: LogBus,
     private val scope: CoroutineScope,
     private val pollIntervalMs: Long = 200,
-) {
+) : CameraController {
     private val session = PtpSession(transport, log)
     private val _state = MutableStateFlow(CameraState())
-    val state: StateFlow<CameraState> = _state.asStateFlow()
+    override val state: StateFlow<CameraState> = _state.asStateFlow()
 
     private val _liveViewFrames = MutableStateFlow<ByteArray?>(null)
-    val liveViewFrames: StateFlow<ByteArray?> = _liveViewFrames.asStateFlow()
+    override val liveViewFrames: StateFlow<ByteArray?> = _liveViewFrames.asStateFlow()
 
     @Volatile private var eventLoop: Job? = null
     @Volatile private var liveViewLoop: Job? = null
@@ -102,7 +102,7 @@ class CanonCamera(
         }
     }
 
-    suspend fun disconnect() = lifecycle.withLock {
+    override suspend fun disconnect() = lifecycle.withLock {
         generation++
         stopLiveViewLoop()
         if (_state.value.liveView) {
@@ -130,18 +130,18 @@ class CanonCamera(
         _state.value = CameraState()
     }
 
-    fun clearError() {
+    override fun clearError() {
         _state.update { it.copy(lastError = null) }
     }
 
-    suspend fun set(setting: CameraSetting, value: Int): Boolean = command("Réglage ${setting.title}") {
+    override suspend fun set(setting: CameraSetting, value: Int): Boolean = command("Réglage ${setting.title}") {
         session.executeOk(
             CanonOp.SET_DEVICE_PROP_VALUE_EX,
             dataOut = CanonValues.setPropPayload(setting.prop, value),
         )
     }
 
-    suspend fun shoot(): Boolean {
+    override suspend fun shoot(): Boolean {
         if (_state.value.status != ConnectionStatus.CONNECTED) return false
         if (!shooting.compareAndSet(false, true)) return false
         _state.update { it.copy(busy = true) }
@@ -184,16 +184,16 @@ class CanonCamera(
             e
         }
 
-    suspend fun autofocus(): Boolean = command("Mise au point automatique") {
+    override suspend fun autofocus(): Boolean = command("Mise au point automatique") {
         session.executeOk(CanonOp.DO_AF)
     }
 
-    suspend fun focus(step: FocusStep): Boolean {
+    override suspend fun focus(step: FocusStep): Boolean {
         if (!_state.value.liveView) return false
         return command("Mise au point manuelle") { session.executeOk(CanonOp.DRIVE_LENS, listOf(step.code)) }
     }
 
-    suspend fun setLiveView(on: Boolean): Boolean {
+    override suspend fun setLiveView(on: Boolean): Boolean {
         if (_state.value.status != ConnectionStatus.CONNECTED) return false
         val gen = generation
         return lifecycle.withLock {
