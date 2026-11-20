@@ -1,5 +1,12 @@
 package dev.canonremote.app.ui
 
+import android.media.MediaActionSound
+import android.view.HapticFeedbackConstants
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalView
+import dev.canonremote.app.settings.UiPreferences
+import dev.canonremote.app.timer.TimerState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -32,7 +39,11 @@ import kotlinx.coroutines.flow.Flow
 
 interface CameraActions {
     fun onSet(setting: CameraSetting, value: Int)
-    fun onShoot()
+    /** Shutter button: shoots, starts the self-timer, or cancels a running countdown. */
+    fun onShutter()
+
+    /** Self-timer delay chosen on the mini-wheel (0, 2 or 10 s); cancels a running countdown. */
+    fun onTimerDelay(seconds: Int)
     fun onAutofocus()
     fun onFocus(step: FocusStep)
     fun onLiveView(on: Boolean)
@@ -54,12 +65,16 @@ fun MainScreen(
     actions: CameraActions,
     statusLabel: String,
     bluetoothRemote: Boolean,
+    preferences: UiPreferences,
+    timer: TimerState,
+    shots: Flow<Unit>,
     connection: @Composable () -> Unit,
     settings: @Composable () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(errors) { errors.collect { snackbar.showSnackbar(it) } }
+    ShutterFeedback(shots = shots, haptic = preferences.shutterHaptic, sound = preferences.shutterSound)
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
@@ -82,6 +97,9 @@ fun MainScreen(
                     frame = frame,
                     actions = actions,
                     onStatusClick = { tab = 1 },
+                    preferences = preferences,
+                    timer = timer,
+                    shots = shots,
                     statusLabel = statusLabel,
                     bluetoothRemote = bluetoothRemote,
                     onSwitchToWifi = { tab = 1 },
@@ -89,6 +107,26 @@ fun MainScreen(
                 1 -> connection()
                 else -> settings()
             }
+        }
+    }
+}
+
+/** Vibration and shutter sound at each shot, whatever tab is shown (Paramètres → Prise de vue). */
+@Composable
+private fun ShutterFeedback(shots: Flow<Unit>, haptic: Boolean, sound: Boolean) {
+    val view = LocalView.current
+    val player = remember { MediaActionSound() }
+    DisposableEffect(player) {
+        player.load(MediaActionSound.SHUTTER_CLICK)
+        onDispose { player.release() }
+    }
+    val currentHaptic by rememberUpdatedState(haptic)
+    val currentSound by rememberUpdatedState(sound)
+    LaunchedEffect(shots) {
+        shots.collect {
+            // CONFIRM exists from API 30; minSdk is 31.
+            if (currentHaptic) view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            if (currentSound) player.play(MediaActionSound.SHUTTER_CLICK)
         }
     }
 }

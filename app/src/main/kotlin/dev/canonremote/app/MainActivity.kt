@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
             val remoteLink by viewModel.remoteLink.collectAsStateWithLifecycle()
             val bluetoothRemote by viewModel.bluetoothRemote.collectAsStateWithLifecycle()
             val logEntries by viewModel.log.entries.collectAsStateWithLifecycle()
+            val timer by viewModel.timerState.collectAsStateWithLifecycle()
             val dark = isDarkTheme(prefs.theme)
 
             // Status/navigation bar icons follow the app theme, not only the system one.
@@ -68,6 +69,9 @@ class MainActivity : ComponentActivity() {
                     actions = viewModel,
                     statusLabel = statusChipLabel(mode, controls.statusLabel),
                     bluetoothRemote = bluetoothRemote,
+                    preferences = prefs,
+                    timer = timer,
+                    shots = viewModel.shots,
                     connection = {
                         ConnectionScreen(
                             ui = ConnectionUi(
@@ -85,9 +89,7 @@ class MainActivity : ComponentActivity() {
                         SettingsTab(
                             preferences = prefs,
                             about = about,
-                            onThemeChange = settings::setTheme,
-                            onDynamicColorChange = settings::setDynamicColor,
-                            onKeepScreenOnChange = settings::setKeepScreenOn,
+                            settings = settings,
                             logs = {
                                 LogsScreen(
                                     entries = logEntries,

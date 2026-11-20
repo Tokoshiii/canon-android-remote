@@ -13,7 +13,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.DeveloperMode
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
@@ -41,6 +47,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import dev.canonremote.app.settings.AppSettings
+import dev.canonremote.app.settings.FocusStepSize
 import dev.canonremote.app.settings.ThemeMode
 import dev.canonremote.app.settings.UiPreferences
 
@@ -55,9 +63,7 @@ data class AboutInfo(val version: String, val phone: String)
 fun SettingsTab(
     preferences: UiPreferences,
     about: AboutInfo,
-    onThemeChange: (ThemeMode) -> Unit,
-    onDynamicColorChange: (Boolean) -> Unit,
-    onKeepScreenOnChange: (Boolean) -> Unit,
+    settings: AppSettings,
     logs: @Composable () -> Unit,
 ) {
     var showLogs by rememberSaveable { mutableStateOf(false) }
@@ -68,9 +74,7 @@ fun SettingsTab(
         SettingsScreen(
             preferences = preferences,
             about = about,
-            onThemeChange = onThemeChange,
-            onDynamicColorChange = onDynamicColorChange,
-            onKeepScreenOnChange = onKeepScreenOnChange,
+            settings = settings,
             onOpenLogs = { showLogs = true },
         )
     }
@@ -80,9 +84,7 @@ fun SettingsTab(
 fun SettingsScreen(
     preferences: UiPreferences,
     about: AboutInfo,
-    onThemeChange: (ThemeMode) -> Unit,
-    onDynamicColorChange: (Boolean) -> Unit,
-    onKeepScreenOnChange: (Boolean) -> Unit,
+    settings: AppSettings,
     onOpenLogs: () -> Unit,
 ) {
     Column(
@@ -102,7 +104,7 @@ fun SettingsScreen(
         )
         ThemeSelector(
             selected = preferences.theme,
-            onSelect = onThemeChange,
+            onSelect = settings::setTheme,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         )
         SwitchItem(
@@ -110,7 +112,7 @@ fun SettingsScreen(
             title = "Couleurs dynamiques",
             subtitle = "Couleurs tirées du fond d'écran",
             checked = preferences.dynamicColor,
-            onCheckedChange = onDynamicColorChange,
+            onCheckedChange = settings::setDynamicColor,
         )
 
         SectionHeader("Prise de vue")
@@ -119,10 +121,57 @@ fun SettingsScreen(
             title = "Garder l'écran allumé",
             subtitle = "Pendant que l'app est ouverte",
             checked = preferences.keepScreenOn,
-            onCheckedChange = onKeepScreenOnChange,
+            onCheckedChange = settings::setKeepScreenOn,
+        )
+        SwitchItem(
+            icon = Icons.Filled.Vibration,
+            title = "Vibration au déclenchement",
+            subtitle = "À chaque photo prise",
+            checked = preferences.shutterHaptic,
+            onCheckedChange = settings::setShutterHaptic,
+        )
+        SwitchItem(
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
+            title = "Son au déclenchement",
+            subtitle = "Bruit d'obturateur sur le téléphone",
+            checked = preferences.shutterSound,
+            onCheckedChange = settings::setShutterSound,
+        )
+        SwitchItem(
+            icon = Icons.Filled.TouchApp,
+            title = "Vibration à chaque cran",
+            subtitle = "En faisant glisser les curseurs et le retardateur",
+            checked = preferences.tickHaptic,
+            onCheckedChange = settings::setTickHaptic,
+        )
+        ListItem(
+            headlineContent = { Text("Pas de mise au point") },
+            supportingContent = { Text("Distance des boutons Proche et Loin") },
+            leadingContent = { Icon(imageVector = Icons.Filled.CenterFocusStrong, contentDescription = null) },
+        )
+        FocusStepSelector(
+            selected = preferences.focusStep,
+            onSelect = settings::setFocusStep,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+
+        SectionHeader("Connexion")
+        SwitchItem(
+            icon = Icons.Filled.Link,
+            title = "Mémoriser les liaisons du relais",
+            subtitle = "Wi-Fi local, point d'accès et Bluetooth restaurés au prochain lancement",
+            checked = preferences.rememberRelayLinks,
+            onCheckedChange = settings::setRememberRelayLinks,
         )
 
         SectionHeader("Diagnostic")
+        SwitchItem(
+            icon = Icons.Filled.DeveloperMode,
+            title = "Mode développeur",
+            subtitle = "Essayer l'interface sans appareil (aucune commande envoyée)",
+            checked = preferences.devMode,
+            onCheckedChange = settings::setDevMode,
+        )
         ListItem(
             headlineContent = { Text("Journal (logs)") },
             supportingContent = { Text("Échanges avec l'appareil, à copier pour un rapport") },
@@ -166,6 +215,31 @@ private fun ThemeSelector(
             )
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FocusStepSelector(
+    selected: FocusStepSize,
+    onSelect: (FocusStepSize) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val sizes = FocusStepSize.entries
+    SingleChoiceSegmentedButtonRow(modifier = modifier) {
+        sizes.forEachIndexed { index, size ->
+            SegmentedButton(
+                selected = size == selected,
+                onClick = { onSelect(size) },
+                shape = SegmentedButtonDefaults.itemShape(index = index, count = sizes.size),
+                label = { Text(focusStepLabel(size)) },
+            )
+        }
+    }
+}
+
+private fun focusStepLabel(size: FocusStepSize): String = when (size) {
+    FocusStepSize.MEDIUM -> "Moyen"
+    FocusStepSize.LARGE -> "Grand"
 }
 
 private fun themeIcon(mode: ThemeMode): ImageVector = when (mode) {
