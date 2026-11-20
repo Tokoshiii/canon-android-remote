@@ -2,6 +2,8 @@ package dev.canonremote.ptp
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CanonValuesTest {
@@ -44,5 +46,27 @@ class CanonValuesTest {
             0x48, 0x00, 0x00, 0x00,
         )
         assertArrayEquals(expected, CanonValues.setPropPayload(CanonProp.ISO, 0x48))
+    }
+
+    @Test
+    fun majorStops() {
+        assertTrue(CanonValues.isMajor(CanonProp.SHUTTER_SPEED, 0x68))
+        assertTrue(CanonValues.isMajor(CanonProp.SHUTTER_SPEED, 0x40))
+        assertFalse(CanonValues.isMajor(CanonProp.SHUTTER_SPEED, 0x65))
+        assertFalse(CanonValues.isMajor(CanonProp.SHUTTER_SPEED, 0x0C))
+        assertTrue(CanonValues.isMajor(CanonProp.APERTURE, 0x20))
+        assertTrue(CanonValues.isMajor(CanonProp.APERTURE, 0x70))
+        assertFalse(CanonValues.isMajor(CanonProp.APERTURE, 0x23))
+        assertTrue(CanonValues.isMajor(CanonProp.ISO, 0x00))
+        assertTrue(CanonValues.isMajor(CanonProp.ISO, 0x90))
+        assertFalse(CanonValues.isMajor(CanonProp.ISO, 0x4B))
+        assertFalse(CanonValues.isMajor(CanonProp.WHITE_BALANCE, 0))
+    }
+
+    @Test
+    fun majorCountsMatchSpec() {
+        assertEquals(19, (0..0xFF).count { CanonValues.isMajor(CanonProp.SHUTTER_SPEED, it) })
+        assertEquals(14, (0..0xFF).count { CanonValues.isMajor(CanonProp.APERTURE, it) })
+        assertEquals(11, (0..0xFF).count { CanonValues.isMajor(CanonProp.ISO, it) })
     }
 }

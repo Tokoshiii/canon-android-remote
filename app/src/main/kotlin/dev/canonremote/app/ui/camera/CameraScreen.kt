@@ -10,12 +10,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -25,6 +27,36 @@ import androidx.compose.ui.unit.dp
 import dev.canonremote.app.ui.CameraActions
 import dev.canonremote.core.CameraSetting
 import dev.canonremote.core.ControlsModel
+import dev.canonremote.core.SliderModel
+import kotlin.math.roundToInt
+
+@Composable
+private fun BasicSliderRow(slider: SliderModel, onSet: (CameraSetting, Int) -> Unit) {
+    var dragging by remember(slider.setting, slider.index) { mutableStateOf<Float?>(null) }
+    val last = (slider.options.size - 1).coerceAtLeast(0)
+    val position = dragging ?: slider.index.coerceAtLeast(0).toFloat()
+    val shownLabel = dragging?.let { slider.options.getOrNull(it.roundToInt())?.second } ?: slider.valueLabel
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(text = slider.title, style = MaterialTheme.typography.labelMedium)
+            Text(text = shownLabel, style = MaterialTheme.typography.titleMedium)
+        }
+        Slider(
+            value = position,
+            onValueChange = { dragging = it },
+            onValueChangeFinished = {
+                dragging?.let { v ->
+                    slider.options.getOrNull(v.roundToInt())?.let { onSet(slider.setting, it.first) }
+                }
+                dragging = null
+            },
+            valueRange = 0f..last.toFloat().coerceAtLeast(1f),
+            steps = (slider.options.size - 2).coerceAtLeast(0),
+            enabled = slider.enabled,
+        )
+        slider.lockHint?.let { Text(text = it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
 
 @Composable
 fun CameraScreen(
@@ -38,7 +70,7 @@ fun CameraScreen(
 ) {
     var pickerFor by rememberSaveable { mutableStateOf<CameraSetting?>(null) }
     var bluetoothLiveViewDialog by rememberSaveable { mutableStateOf(false) }
-    val picked = controls.tiles.firstOrNull { it.setting == pickerFor && it.enabled }
+    val picked = controls.whiteBalance.takeIf { it.setting == pickerFor && it.enabled }
 
     Column(
         Modifier
@@ -61,21 +93,18 @@ fun CameraScreen(
 
         if (controls.liveViewOn) LiveViewCard(frame)
 
-        controls.tiles.chunked(2).forEach { rowTiles ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                rowTiles.forEach { tile ->
-                    SettingTile(
-                        tile = tile,
-                        onClick = { pickerFor = tile.setting },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        }
+        // Minimal rendering until the v2 UI (Task 5): basic sliders, WB tile.
+        controls.sliders.forEach { slider -> BasicSliderRow(slider = slider, onSet = actions::onSet) }
+
+        SettingTile(
+            tile = controls.whiteBalance,
+            onClick = { pickerFor = controls.whiteBalance.setting },
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         FocusRow(
-            afEnabled = controls.afEnabled,
-            manualEnabled = controls.manualFocusEnabled,
+            afEnabled = controls.focus.afEnabled,
+            manualEnabled = controls.focus.manualStepsEnabled,
             onAutofocus = actions::onAutofocus,
             onFocus = actions::onFocus,
         )

@@ -10,10 +10,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.canonremote.core.TileModel
+import dev.canonremote.core.ChoiceModel
 
 @Composable
-fun SettingTile(tile: TileModel, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingTile(tile: ChoiceModel, onClick: () -> Unit, modifier: Modifier = Modifier) {
     ElevatedCard(
         onClick = onClick,
         enabled = tile.enabled,

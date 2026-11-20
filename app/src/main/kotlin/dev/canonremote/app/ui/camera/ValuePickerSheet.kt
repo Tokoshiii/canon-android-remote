@@ -16,11 +16,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import dev.canonremote.core.TileModel
+import dev.canonremote.core.ChoiceModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ValuePickerSheet(tile: TileModel, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+fun ValuePickerSheet(tile: ChoiceModel, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.padding(bottom = 16.dp)) {

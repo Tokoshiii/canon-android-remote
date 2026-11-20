@@ -199,6 +199,23 @@ object CanonValues {
         return text ?: "0x%02X".format(value)
     }
 
+    private val majorShutter = setOf(
+        0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58,
+        0x60, 0x68, 0x70, 0x78, 0x80, 0x88, 0x90, 0x98, 0xA0,
+    )
+    private val majorAperture = setOf(
+        0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70,
+    )
+    private val majorIso = setOf(0x00, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88, 0x90)
+
+    /** true si [value] est un cran « principal » (stop entier) de [prop] : points du curseur. */
+    fun isMajor(prop: Int, value: Int): Boolean = when (prop) {
+        CanonProp.SHUTTER_SPEED -> value in majorShutter
+        CanonProp.APERTURE -> value in majorAperture
+        CanonProp.ISO -> value in majorIso
+        else -> false
+    }
+
     /** Payload SetDevicePropValue : longueur 12, puis propriété et valeur en u32 little-endian. */
     fun setPropPayload(prop: Int, value: Int): ByteArray {
         val w = ByteWriter()
