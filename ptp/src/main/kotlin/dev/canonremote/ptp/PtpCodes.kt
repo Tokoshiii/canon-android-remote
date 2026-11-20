@@ -30,6 +30,8 @@ object CanonProp {
     const val SHUTTER_SPEED = 0xD102
     const val ISO = 0xD103
     const val WHITE_BALANCE = 0xD109
+    const val SHOOTING_MODE = 0xD105
+    const val FOCUS_MODE = 0xD108
     const val CAPTURE_DESTINATION = 0xD11C
     const val EVF_OUTPUT_DEVICE = 0xD1B0
     const val EVF_MODE = 0xD1B3

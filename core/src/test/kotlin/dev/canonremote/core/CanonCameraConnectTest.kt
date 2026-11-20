@@ -68,6 +68,21 @@ class CanonCameraConnectTest {
         assertEquals(SettingState(0x50, listOf(0x48, 0x50)), cam.state.value.settings[CameraSetting.ISO])
     }
 
+    @Test fun shootingAndFocusModeApplied() = runTest {
+        script(
+            testRecord(CanonEventCode.PROP_VALUE_CHANGED, CanonProp.SHOOTING_MODE, 3) +
+                testRecord(CanonEventCode.PROP_VALUE_CHANGED, CanonProp.FOCUS_MODE, 3) + TERMINATOR,
+            testRecord(CanonEventCode.PROP_VALUE_CHANGED, CanonProp.SHOOTING_MODE, 2) + TERMINATOR,
+        )
+        val cam = camera()
+        cam.connect()
+        assertEquals(3, cam.state.value.shootingMode)
+        assertEquals(3, cam.state.value.focusMode)
+        advanceTimeBy(250)
+        assertEquals(2, cam.state.value.shootingMode)
+        assertEquals(3, cam.state.value.focusMode)
+    }
+
     @Test fun pollingAppliesLaterChanges() = runTest {
         script(TERMINATOR, isoValue(0x48))
         val cam = camera()

@@ -26,4 +26,6 @@ data class CameraState(
     val liveView: Boolean = false,
     val busy: Boolean = false,
     val lastError: String? = null,
+    val shootingMode: Int? = null,
+    val focusMode: Int? = null,
 )

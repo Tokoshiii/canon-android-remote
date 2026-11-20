@@ -306,7 +306,17 @@ class CanonCamera(
     ): List<CanonEvent> {
         val data = session.executeOk(CanonOp.GET_EVENT, hexMax = hexMax, logIf = logIf).data ?: return emptyList()
         val events = parseCanonEvents(data)
-        _state.update { s -> s.copy(settings = events.fold(s.settings, ::applyEvent)) }
+        _state.update { s ->
+            var shooting = s.shootingMode
+            var focus = s.focusMode
+            for (e in events) if (e is CanonEvent.PropValueChanged) {
+                when (e.prop) {
+                    CanonProp.SHOOTING_MODE -> shooting = e.value
+                    CanonProp.FOCUS_MODE -> focus = e.value
+                }
+            }
+            s.copy(settings = events.fold(s.settings, ::applyEvent), shootingMode = shooting, focusMode = focus)
+        }
         return events
     }
 

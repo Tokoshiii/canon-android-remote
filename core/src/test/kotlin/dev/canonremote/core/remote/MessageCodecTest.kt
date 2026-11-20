@@ -20,6 +20,7 @@ class MessageCodecTest {
             CameraSetting.SHUTTER to SettingState(null, emptyList()),
         ),
         liveView = true, busy = true, lastError = "oops",
+        shootingMode = 3, focusMode = 3,
     )
 
     @Test fun roundTripsAllMessages() {
@@ -54,5 +55,12 @@ class MessageCodecTest {
 
     @Test fun cameraStateRoundTrip() {
         assertEquals(state, state.toRemote().toCameraState())
+    }
+
+    @Test fun oldJsonWithoutModesDecodes() {
+        val json = """{"type":"state","state":{"status":"CONNECTED","model":"EOS 90D"}}"""
+        val r = (MessageCodec.decode(json) as Message.StateMsg).state
+        assertEquals(null, r.shootingMode)
+        assertEquals(null, r.focusMode)
     }
 }

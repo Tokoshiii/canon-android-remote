@@ -67,16 +67,18 @@ data class RemoteState(
     val liveView: Boolean = false,
     val busy: Boolean = false,
     val lastError: String? = null,
+    val shootingMode: Int? = null,
+    val focusMode: Int? = null,
 )
 
 fun CameraState.toRemote() = RemoteState(
     status, model, serial,
     settings.map { (k, v) -> RemoteSetting(k, v.current, v.available) },
-    liveView, busy, lastError,
+    liveView, busy, lastError, shootingMode, focusMode,
 )
 
 fun RemoteState.toCameraState() = CameraState(
     status, model, serial,
     settings.associate { it.setting to SettingState(it.current, it.available) },
-    liveView, busy, lastError,
+    liveView, busy, lastError, shootingMode, focusMode,
 )
