@@ -4,17 +4,11 @@ import dev.canonremote.app.remote.HotspotInfo
 import dev.canonremote.app.remote.QrPayload
 import dev.canonremote.app.remote.RELAY_WS_PORT
 import dev.canonremote.app.settings.AppMode
+import dev.canonremote.app.settings.DEFAULT_RELAY_LINKS
 import dev.canonremote.core.remote.RelayClient
 import java.security.SecureRandom
 import kotlin.random.Random
 import kotlin.random.asKotlinRandom
-
-/** Links a relay can offer to a remote. */
-enum class RelayLink(val label: String) {
-    WIFI("Wi-Fi local"),
-    HOTSPOT("Point d'accès"),
-    BLUETOOTH("Bluetooth"),
-}
 
 /**
  * What the Relais card shows. [links] are the links the user switched on; [hotspot] is set once
@@ -22,7 +16,7 @@ enum class RelayLink(val label: String) {
  */
 data class RelayUiState(
     val running: Boolean = false,
-    val links: Set<RelayLink> = setOf(RelayLink.WIFI),
+    val links: Set<RelayLink> = DEFAULT_RELAY_LINKS,
     val pairingCode: String? = null,
     val hotspot: HotspotInfo? = null,
     val hotspotStarting: Boolean = false,

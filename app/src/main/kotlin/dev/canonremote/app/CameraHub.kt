@@ -121,7 +121,8 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
     /** Errors of the active camera (each consumed once), for the snackbar. */
     val errors: Flow<String> = errorChannel.receiveAsFlow()
 
-    private val _relay = MutableStateFlow(RelayUiState())
+    /** Links chosen last time come back when « Mémoriser les liaisons du relais » is on. */
+    private val _relay = MutableStateFlow(RelayUiState(links = settings.preferences.value.initialRelayLinks()))
     val relayState: StateFlow<RelayUiState> = _relay.asStateFlow()
 
     private val _bluetoothRestarts = MutableStateFlow(0)
@@ -331,6 +332,8 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 linkErrors = it.linkErrors - link,
             )
         }
+        // Always saved; only restored at launch when remembered (see initialRelayLinks).
+        settings.setRelayLinks(_relay.value.links)
         if (link == RelayLink.HOTSPOT) {
             if (enabled && _relay.value.running) startHotspot()
             if (!enabled) stopHotspot()

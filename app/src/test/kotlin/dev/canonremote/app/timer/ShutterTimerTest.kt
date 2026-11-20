@@ -1,6 +1,7 @@
 package dev.canonremote.app.timer
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -92,5 +93,63 @@ class ShutterTimerTest {
         timer.press(0) { fired++ }
         runCurrent()
         assertEquals(2, fired)
+    }
+
+    @Test
+    fun anEarlierJobFinishingLateDoesNotResetANewerCountdown() = runTest {
+        val timer = ShutterTimer(backgroundScope)
+        var fired = 0
+        // The first shot is slow (e.g. through a relay): its job is still running...
+        timer.press(1) { delay(1_500); fired++ }
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(TimerState.Idle, timer.state.value)
+        // ...when a new countdown starts.
+        timer.press(2) { fired++ }
+        runCurrent()
+        assertEquals(TimerState.Counting(2), timer.state.value)
+        advanceTimeBy(1_600); runCurrent()
+        assertEquals(1, fired)
+        // The first job's end must not clobber the running countdown.
+        assertEquals(TimerState.Counting(1), timer.state.value)
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(2, fired)
+        assertEquals(TimerState.Idle, timer.state.value)
+    }
+
+    @Test
+    fun cancelThenPressKeepsTheNewCountdown() = runTest {
+        val timer = ShutterTimer(backgroundScope)
+        var fired = 0
+        timer.press(10) { fired++ }
+        runCurrent()
+        timer.cancel()
+        timer.press(2) { fired++ }
+        runCurrent()
+        assertEquals(TimerState.Counting(2), timer.state.value)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(1, fired)
+        assertEquals(TimerState.Idle, timer.state.value)
+    }
+    @Test
+    fun delayChangeThenPressKeepsTheNewCountdown() = runTest {
+        val timer = ShutterTimer(backgroundScope)
+        timer.press(10) {}
+        runCurrent()
+        timer.onDelayChanged()
+        timer.press(2) {}
+        runCurrent()
+        assertEquals(TimerState.Counting(2), timer.state.value)
+    }
+
+    @Test
+    fun delayChangeWhileTheShotIsInProgressDoesNotCancelIt() = runTest {
+        val timer = ShutterTimer(backgroundScope)
+        var fired = 0
+        timer.press(1) { delay(500); fired++ }
+        advanceTimeBy(1_100); runCurrent()
+        timer.onDelayChanged()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(1, fired)
+        assertEquals(TimerState.Idle, timer.state.value)
     }
 }

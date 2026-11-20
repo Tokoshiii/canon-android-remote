@@ -78,4 +78,25 @@ class BluetoothDeviceListTest {
         assertEquals(listOf("01"), addresses(list.paired))
         assertTrue(list.nearby.isEmpty())
     }
+
+    @Test
+    fun pairStepConnectsWhenBondedWithoutCreatingABond() {
+        var created = 0
+        assertEquals(PairStep.CONNECT, pairStep(BondState.BONDED) { created++; true })
+        assertEquals(0, created)
+    }
+
+    @Test
+    fun pairStepWaitsForABondAlreadyInProgress() {
+        var created = 0
+        // Tapping a device again while Android pairs it: wait for that bond, no « impossible ».
+        assertEquals(PairStep.WAIT_FOR_BOND, pairStep(BondState.BONDING) { created++; false })
+        assertEquals(0, created)
+    }
+
+    @Test
+    fun pairStepCreatesABondOtherwise() {
+        assertEquals(PairStep.WAIT_FOR_BOND, pairStep(BondState.NONE) { true })
+        assertEquals(PairStep.FAILED, pairStep(BondState.NONE) { false })
+    }
 }

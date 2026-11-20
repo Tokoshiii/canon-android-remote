@@ -1,5 +1,7 @@
 package dev.canonremote.app.settings
 
+import dev.canonremote.app.relay.RelayLink
+import dev.canonremote.core.FocusStep
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,21 +33,17 @@ enum class FocusStepSize(val key: String, val steps: Int) {
     MEDIUM("medium", 2),
     LARGE("large", 3);
 
+    /** « Proche » / « Loin » buttons. */
+    val near: FocusStep get() = if (this == MEDIUM) FocusStep.NEAR_2 else FocusStep.NEAR_3
+    val far: FocusStep get() = if (this == MEDIUM) FocusStep.FAR_2 else FocusStep.FAR_3
+
     companion object {
         fun fromKey(key: String?): FocusStepSize = entries.firstOrNull { it.key == key } ?: LARGE
     }
 }
 
-/** Links a relay may be started with; persisted by [key]. */
-enum class RelayLinkPref(val key: String) {
-    WIFI_LOCAL("wifi_local"),
-    HOTSPOT("hotspot"),
-    BLUETOOTH("bluetooth");
-
-    companion object {
-        fun fromKey(key: String?): RelayLinkPref? = entries.firstOrNull { it.key == key }
-    }
-}
+/** Links offered by a relay the first time (or when they are not remembered). */
+val DEFAULT_RELAY_LINKS: Set<RelayLink> = setOf(RelayLink.WIFI)
 
 /** Shutter timer delays offered by the app, in seconds (0 = off). */
 val TIMER_DELAYS: List<Int> = listOf(0, 2, 10)
@@ -61,9 +59,12 @@ data class UiPreferences(
     val focusStep: FocusStepSize = FocusStepSize.LARGE,
     val timerDelay: Int = 0,
     val rememberRelayLinks: Boolean = true,
-    val relayLinks: Set<RelayLinkPref> = setOf(RelayLinkPref.WIFI_LOCAL),
+    val relayLinks: Set<RelayLink> = DEFAULT_RELAY_LINKS,
     val devMode: Boolean = false,
-)
+) {
+    /** Links the relay starts with: the saved ones when they are remembered, else the defaults. */
+    fun initialRelayLinks(): Set<RelayLink> = if (rememberRelayLinks) relayLinks else DEFAULT_RELAY_LINKS
+}
 
 /** Minimal persistent key-value storage, so the settings logic stays testable on the JVM. */
 interface KeyValueStore {
@@ -147,7 +148,7 @@ class AppSettings(private val store: KeyValueStore) {
         state.update { it.copy(rememberRelayLinks = enabled) }
     }
 
-    fun setRelayLinks(links: Set<RelayLinkPref>) {
+    fun setRelayLinks(links: Set<RelayLink>) {
         store.putString(KEY_RELAY_LINKS, links.joinToString(",") { it.key })
         state.update { it.copy(relayLinks = links) }
     }
@@ -157,9 +158,9 @@ class AppSettings(private val store: KeyValueStore) {
         state.update { it.copy(devMode = enabled) }
     }
 
-    private fun readRelayLinks(raw: String?): Set<RelayLinkPref> =
-        if (raw == null) setOf(RelayLinkPref.WIFI_LOCAL)
-        else raw.split(',').mapNotNull { RelayLinkPref.fromKey(it) }.toSet()
+    private fun readRelayLinks(raw: String?): Set<RelayLink> =
+        if (raw == null) DEFAULT_RELAY_LINKS
+        else raw.split(',').mapNotNull { RelayLink.fromKey(it) }.toSet()
 
     private companion object {
         const val KEY_THEME = "theme"

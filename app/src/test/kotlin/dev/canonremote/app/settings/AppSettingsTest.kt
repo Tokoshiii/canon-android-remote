@@ -1,5 +1,7 @@
 package dev.canonremote.app.settings
 
+import dev.canonremote.app.relay.RelayLink
+import dev.canonremote.core.FocusStep
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -72,7 +74,7 @@ class AppSettingsTest {
         assertEquals(2, FocusStepSize.MEDIUM.steps)
         assertEquals(0, prefs.timerDelay)
         assertTrue(prefs.rememberRelayLinks)
-        assertEquals(setOf(RelayLinkPref.WIFI_LOCAL), prefs.relayLinks)
+        assertEquals(setOf(RelayLink.WIFI), prefs.relayLinks)
         assertFalse(prefs.devMode)
     }
 
@@ -86,7 +88,7 @@ class AppSettingsTest {
         settings.setFocusStep(FocusStepSize.MEDIUM)
         settings.setTimerDelay(10)
         settings.setRememberRelayLinks(false)
-        settings.setRelayLinks(setOf(RelayLinkPref.HOTSPOT, RelayLinkPref.BLUETOOTH))
+        settings.setRelayLinks(setOf(RelayLink.HOTSPOT, RelayLink.BLUETOOTH))
         settings.setDevMode(true)
         val reloaded = AppSettings(store).preferences.value
         assertEquals(settings.preferences.value, reloaded)
@@ -94,16 +96,16 @@ class AppSettingsTest {
         assertTrue(reloaded.shutterSound)
         assertEquals(FocusStepSize.MEDIUM, reloaded.focusStep)
         assertEquals(10, reloaded.timerDelay)
-        assertEquals(setOf(RelayLinkPref.HOTSPOT, RelayLinkPref.BLUETOOTH), reloaded.relayLinks)
+        assertEquals(setOf(RelayLink.HOTSPOT, RelayLink.BLUETOOTH), reloaded.relayLinks)
     }
 
     @Test
     fun emptyRelayLinkSetIsKeptAndUnknownKeysIgnored() {
         val store = MemoryStore()
         AppSettings(store).setRelayLinks(emptySet())
-        assertEquals(emptySet<RelayLinkPref>(), AppSettings(store).preferences.value.relayLinks)
+        assertEquals(emptySet<RelayLink>(), AppSettings(store).preferences.value.relayLinks)
         store.values["relay_links"] = "hotspot,laser"
-        assertEquals(setOf(RelayLinkPref.HOTSPOT), AppSettings(store).preferences.value.relayLinks)
+        assertEquals(setOf(RelayLink.HOTSPOT), AppSettings(store).preferences.value.relayLinks)
     }
 
     @Test
@@ -121,5 +123,30 @@ class AppSettingsTest {
     fun unknownFocusStepFallsBackToLarge() {
         val store = MemoryStore().apply { values["focus_step"] = "huge" }
         assertEquals(FocusStepSize.LARGE, AppSettings(store).preferences.value.focusStep)
+    }
+
+    @Test
+    fun relayLinksAreStoredUnderStableKeys() {
+        val store = MemoryStore()
+        AppSettings(store).setRelayLinks(setOf(RelayLink.WIFI, RelayLink.HOTSPOT, RelayLink.BLUETOOTH))
+        assertEquals(setOf("wifi_local", "hotspot", "bluetooth"), (store.values["relay_links"] as String).split(',').toSet())
+        assertEquals(RelayLink.WIFI, RelayLink.fromKey("wifi_local"))
+        assertEquals(null, RelayLink.fromKey("WIFI"))
+    }
+
+    @Test
+    fun relayLinksAreRestoredOnlyWhenRemembered() {
+        val saved = UiPreferences(relayLinks = setOf(RelayLink.BLUETOOTH), rememberRelayLinks = true)
+        assertEquals(setOf(RelayLink.BLUETOOTH), saved.initialRelayLinks())
+        assertEquals(DEFAULT_RELAY_LINKS, saved.copy(rememberRelayLinks = false).initialRelayLinks())
+        assertEquals(setOf(RelayLink.WIFI), DEFAULT_RELAY_LINKS)
+    }
+
+    @Test
+    fun focusStepSizeMapsToCameraSteps() {
+        assertEquals(FocusStep.NEAR_2, FocusStepSize.MEDIUM.near)
+        assertEquals(FocusStep.FAR_2, FocusStepSize.MEDIUM.far)
+        assertEquals(FocusStep.NEAR_3, FocusStepSize.LARGE.near)
+        assertEquals(FocusStep.FAR_3, FocusStepSize.LARGE.far)
     }
 }

@@ -35,16 +35,24 @@ class ShutterTimer(private val scope: CoroutineScope) {
         }
         mutableState.value = TimerState.Counting(delaySeconds)
         job = scope.launch {
+            val self = coroutineContext[Job]
             try {
                 for (remaining in delaySeconds downTo 1) {
                     mutableState.value = TimerState.Counting(remaining)
                     delay(1_000)
                 }
+                // The countdown is over: from now on this job is no longer the timer's, so a new
+                // press (or a delay change) neither cancels the shot in progress nor is reset by it.
+                job = null
                 mutableState.value = TimerState.Idle
                 fire()
             } finally {
-                // Cancelled mid-count (or fire threw): never stay in Counting.
-                mutableState.value = TimerState.Idle
+                // Cancelled mid-count (or fire threw): never stay in Counting, but only when this
+                // job is still the current one; a newer countdown must not be clobbered.
+                if (job === self) {
+                    job = null
+                    mutableState.value = TimerState.Idle
+                }
             }
         }
     }
@@ -53,7 +61,8 @@ class ShutterTimer(private val scope: CoroutineScope) {
     fun onDelayChanged() = cancel()
 
     fun cancel() {
-        job?.cancel()
+        val current = job ?: return
+        current.cancel()
         job = null
         mutableState.value = TimerState.Idle
     }

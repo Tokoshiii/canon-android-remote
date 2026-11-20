@@ -37,3 +37,19 @@ data class BluetoothDeviceList(
 
     fun clearNearby(): BluetoothDeviceList = copy(nearby = emptyList())
 }
+
+/** Android's bond state of a device, without the Android type. */
+enum class BondState { NONE, BONDING, BONDED }
+
+/** What touching a device on the remote leads to. */
+enum class PairStep { CONNECT, WAIT_FOR_BOND, FAILED }
+
+/**
+ * Touching a device: bonded → connect; already bonding (touched again while Android pairs it) →
+ * wait for that bond; otherwise [createBond] (system dialog), then wait, or fail if refused.
+ */
+fun pairStep(bond: BondState, createBond: () -> Boolean): PairStep = when (bond) {
+    BondState.BONDED -> PairStep.CONNECT
+    BondState.BONDING -> PairStep.WAIT_FOR_BOND
+    BondState.NONE -> if (createBond()) PairStep.WAIT_FOR_BOND else PairStep.FAILED
+}

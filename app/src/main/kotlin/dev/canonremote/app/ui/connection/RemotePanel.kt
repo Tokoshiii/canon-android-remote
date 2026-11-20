@@ -48,11 +48,14 @@ import dev.canonremote.app.RelayDiscovery
 import dev.canonremote.app.RemoteTarget
 import dev.canonremote.app.relay.RemoteLinkUi
 import dev.canonremote.app.relay.RuntimePermissions
+import dev.canonremote.app.remote.BondState
 import dev.canonremote.app.remote.BluetoothDeviceList
 import dev.canonremote.app.remote.BtDevice
 import dev.canonremote.app.remote.DiscoveredRelay
+import dev.canonremote.app.remote.PairStep
 import dev.canonremote.app.remote.QrPayload
 import dev.canonremote.app.remote.bondedDevices
+import dev.canonremote.app.remote.pairStep
 import dev.canonremote.app.remote.toBtDevice
 
 private const val JOIN_DENIED =
@@ -264,16 +267,22 @@ private fun BluetoothRelaysCard(actions: ConnectionActions, permissions: Permiss
         val adapter = usableAdapter() ?: return@withPermissions
         runCatching { adapter.cancelDiscovery() } // discovery slows pairing down
         val device = adapter.getRemoteDevice(entry.address)
-        when {
-            device.bondState == BluetoothDevice.BOND_BONDED -> {
+        val bond = when (device.bondState) {
+            BluetoothDevice.BOND_BONDED -> BondState.BONDED
+            BluetoothDevice.BOND_BONDING -> BondState.BONDING
+            else -> BondState.NONE
+        }
+        when (pairStep(bond) { device.createBond() }) {
+            PairStep.CONNECT -> {
                 loadBonded()
                 connect(device)
             }
-            device.createBond() -> {
+            PairStep.WAIT_FOR_BOND -> {
+                // Also when touched again during a pairing: its BOND_BONDED then connects.
                 bonding = entry.address
                 status = "Appairage avec ${entry.label}… Accepte la demande sur les deux téléphones."
             }
-            else -> status = "Appairage impossible avec ${entry.label}."
+            PairStep.FAILED -> status = "Appairage impossible avec ${entry.label}."
         }
     }
 
