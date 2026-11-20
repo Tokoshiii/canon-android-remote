@@ -15,6 +15,7 @@ import dev.canonremote.app.settings.AppSettings
 import dev.canonremote.app.timer.ShutterTimer
 import dev.canonremote.app.timer.TimerState
 import dev.canonremote.app.ui.CameraActions
+import dev.canonremote.app.ui.camera.DevPanelActions
 import dev.canonremote.app.ui.connection.ConnectionActions
 import dev.canonremote.app.usb.UsbStatus
 import dev.canonremote.core.CameraSetting
@@ -42,7 +43,7 @@ import kotlinx.coroutines.launch
 
 /** UI side of [CameraHub]: the Appareil screen drives [CameraHub.activeCamera] whatever the mode. */
 @OptIn(ExperimentalCoroutinesApi::class)
-class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, ConnectionActions {
+class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, ConnectionActions, DevPanelActions {
     val log: LogBus = (app as CanonRemoteApp).log
     val hub: CameraHub = (app as CanonRemoteApp).hub
     private val settings: AppSettings = (app as CanonRemoteApp).settings
@@ -81,6 +82,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /** True while the Appareil screen drives the developer mode's simulated camera. */
+    val devActive: StateFlow<Boolean> = hub.devCamera
+        .map { it != null }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     val errors: Flow<String> = hub.errors
 
     /** Self-timer of the shutter button; the countdown runs on this phone (the one that shoots). */
@@ -89,7 +95,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     private val _shots = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
-    /** One event per shot sent (after the countdown): vibration, sound, « Photo prise ». */
+    /** One event per shot the camera took (after the countdown): vibration, sound, « Photo prise ». */
     val shots: SharedFlow<Unit> = _shots.asSharedFlow()
 
     override fun connect() = hub.connectUsb()
@@ -128,8 +134,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     override fun onShutter() {
         timer.press(settings.preferences.value.timerDelay) {
             val cam = hub.activeCamera.value ?: return@press
-            _shots.tryEmit(Unit)
-            cam.shoot()
+            // Feedback only once the camera has taken the picture.
+            if (cam.shoot()) _shots.tryEmit(Unit)
         }
     }
 
@@ -152,6 +158,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     override fun onLiveView(on: Boolean) {
         val cam = hub.activeCamera.value ?: return
         viewModelScope.launch { cam.setLiveView(on) }
+    }
+
+    override fun onDevShootingMode(code: Int) {
+        hub.devCamera.value?.setShootingMode(code)
+    }
+
+    override fun onDevFocusMode(code: Int) {
+        hub.devCamera.value?.setFocusMode(code)
     }
 
     override fun onCleared() {

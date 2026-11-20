@@ -71,6 +71,8 @@ fun ExposureSliderCard(
     val localIndex = dragIndex ?: pendingIndex
     val shownIndex = localIndex ?: slider.index
     val valueLabel = localIndex?.let { slider.options.getOrNull(it)?.second } ?: slider.valueLabel
+    // Locked by the mode: the camera chooses, so « Auto » in large (Bulb stays « Bulb »).
+    val headline = if (slider.locked && slider.valueLabel != BULB) AUTO else valueLabel
     val colors = SliderDefaults.colors()
 
     Surface(
@@ -95,7 +97,7 @@ fun ExposureSliderCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = valueLabel,
+                        text = headline,
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -114,7 +116,9 @@ fun ExposureSliderCard(
                     onValueChangeFinished = {
                         val notch = dragIndex
                         dragIndex = null
-                        if (notch != null && notch != slider.index) {
+                        // Compared to what was last sent (still pending), not only to the camera's
+                        // value: going back to the original notch before it confirms is sent too.
+                        if (notch != null && notch != (pendingIndex ?: slider.index)) {
                             slider.options.getOrNull(notch)?.let { (value, _) ->
                                 pendingIndex = notch
                                 onSet(slider.setting, value)
@@ -156,7 +160,7 @@ fun ExposureSliderCard(
                 ) {
                     Text(
                         // Bulb is locked too, but is not an automatic value.
-                        text = if (slider.valueLabel == BULB) BULB else "Auto",
+                        text = if (slider.valueLabel == BULB) BULB else AUTO,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
@@ -181,3 +185,4 @@ fun ExposureSliderCard(
 }
 
 private const val BULB = "Bulb"
+private const val AUTO = "Auto"

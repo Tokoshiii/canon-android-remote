@@ -99,6 +99,9 @@ private fun sliderFor(
     )
 }
 
+/** Libellé affiché d'une valeur de [setting] (« 1/125 », « f/5.6 », « 400 »…) ; hexa si inconnue. */
+fun settingValueLabel(setting: CameraSetting, value: Int): String = CanonValues.label(setting.prop, value)
+
 fun CameraState.toControls(): ControlsModel {
     val connected = status == ConnectionStatus.CONNECTED
     val mode = exposureModeOf(shootingMode)

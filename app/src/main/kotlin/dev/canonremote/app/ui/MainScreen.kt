@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.canonremote.app.ui.camera.CameraScreen
+import dev.canonremote.app.ui.camera.DevPanelActions
 import dev.canonremote.core.CameraSetting
 import dev.canonremote.core.ControlsModel
 import dev.canonremote.core.FocusStep
@@ -68,6 +69,7 @@ fun MainScreen(
     preferences: UiPreferences,
     timer: TimerState,
     shots: Flow<Unit>,
+    devActions: DevPanelActions?,
     connection: @Composable () -> Unit,
     settings: @Composable () -> Unit,
 ) {
@@ -103,6 +105,7 @@ fun MainScreen(
                     statusLabel = statusLabel,
                     bluetoothRemote = bluetoothRemote,
                     onSwitchToWifi = { tab = 1 },
+                    devActions = devActions,
                 )
                 1 -> connection()
                 else -> settings()

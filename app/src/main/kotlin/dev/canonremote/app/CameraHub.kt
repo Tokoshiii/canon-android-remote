@@ -7,6 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.content.ContextCompat
+import dev.canonremote.app.dev.DevCameraController
+import dev.canonremote.app.dev.DevTestImage
+import dev.canonremote.app.dev.devCameraWanted
 import dev.canonremote.app.relay.PairingCode
 import dev.canonremote.app.relay.RelayLink
 import dev.canonremote.app.relay.RelayService
@@ -85,7 +88,8 @@ data class RelayDiscovery(val relays: List<DiscoveredRelay> = emptyList(), val e
  * App-level owner of the cameras, shared by the UI and [RelayService]: the USB [CanonCamera], the
  * relay's state (its runtime lives in [RelayService]) and the [RemoteCamera] of the Télécommande
  * mode. [activeCamera] is what the Appareil screen drives: the USB camera in Direct and Relais
- * modes, the remote in Télécommande mode.
+ * modes, the remote in Télécommande mode, or the [DevCameraController] while developer mode is on
+ * and no real camera is connected.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CameraHub(context: Context, val log: LogBus, private val settings: AppSettings) {
@@ -105,9 +109,15 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
         .map { it.mode }
         .stateIn(scope, SharingStarted.Eagerly, settings.preferences.value.mode)
 
-    val activeCamera: StateFlow<CameraController?> = combine(mode, _usbCamera, _remote) { m, usb, remote ->
-        if (m == AppMode.REMOTE) remote else usb
+    /** Simulated camera of the developer mode (test tool), only while no real camera is there. */
+    private val _dev = MutableStateFlow<DevCameraController?>(null)
+
+    val activeCamera: StateFlow<CameraController?> = combine(mode, _usbCamera, _remote, _dev) { m, usb, remote, dev ->
+        dev ?: if (m == AppMode.REMOTE) remote else usb
     }.stateIn(scope, SharingStarted.Eagerly, if (mode.value == AppMode.REMOTE) null else _usbCamera.value)
+
+    /** True while the Appareil screen drives the simulated camera (banner, developer panel). */
+    val devCamera: StateFlow<DevCameraController?> = _dev.asStateFlow()
 
     /**
      * Conflated: while the relay runs without any UI, only the latest error waits for the snackbar
@@ -155,6 +165,26 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
     private var opening = false
 
     init {
+        scope.launch {
+            // Developer mode: the simulated camera exists only while no real camera is connected.
+            combine(
+                settings.preferences.map { it.devMode },
+                mode,
+                _usbCamera.flatMapLatest { it?.state?.map { s -> s.status } ?: flowOf(ConnectionStatus.DISCONNECTED) },
+                _remote.flatMapLatest { it?.linkState ?: flowOf(null) },
+            ) { dev, m, usb, link -> devCameraWanted(dev, m == AppMode.REMOTE, usb, link) }
+                .distinctUntilChanged()
+                .collect { wanted ->
+                    val current = _dev.value
+                    if (wanted && current == null) {
+                        log.info("[dev] Appareil simulé démarré (aucune commande n'est envoyée)")
+                        _dev.value = DevCameraController(log, scope, DevTestImage::render)
+                    } else if (!wanted && current != null) {
+                        _dev.value = null
+                        current.disconnect()
+                    }
+                }
+        }
         scope.launch {
             activeCamera
                 .flatMapLatest { cam -> cam?.state?.map { cam to it } ?: emptyFlow() }
@@ -242,6 +272,9 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
 
     /** Called when the UI goes away: disconnects the cameras unless the relay is running. */
     fun releaseIfIdle() {
+        _dev.value?.let { dev ->
+            if (dev.state.value.liveView) scope.launch { dev.setLiveView(false) }
+        }
         if (_relay.value.running) return
         disconnectUsb()
         if (_remote.value != null) disconnectRemote()

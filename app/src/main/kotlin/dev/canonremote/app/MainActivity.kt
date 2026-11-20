@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
             val bluetoothRemote by viewModel.bluetoothRemote.collectAsStateWithLifecycle()
             val logEntries by viewModel.log.entries.collectAsStateWithLifecycle()
             val timer by viewModel.timerState.collectAsStateWithLifecycle()
+            val devActive by viewModel.devActive.collectAsStateWithLifecycle()
             val dark = isDarkTheme(prefs.theme)
 
             // Status/navigation bar icons follow the app theme, not only the system one.
@@ -72,6 +73,7 @@ class MainActivity : ComponentActivity() {
                     preferences = prefs,
                     timer = timer,
                     shots = viewModel.shots,
+                    devActions = if (devActive) viewModel else null,
                     connection = {
                         ConnectionScreen(
                             ui = ConnectionUi(

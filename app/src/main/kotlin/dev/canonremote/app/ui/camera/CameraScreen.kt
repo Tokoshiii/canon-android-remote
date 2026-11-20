@@ -45,10 +45,13 @@ fun CameraScreen(
     statusLabel: String = controls.statusLabel,
     bluetoothRemote: Boolean = false,
     onSwitchToWifi: () -> Unit = {},
+    /** Non-null while the developer mode's simulated camera is used: banner and panel. */
+    devActions: DevPanelActions? = null,
 ) {
     var tab by rememberSaveable { mutableStateOf(CameraTab.BASIC) }
     var pickerFor by rememberSaveable { mutableStateOf<CameraSetting?>(null) }
     var bluetoothLiveViewDialog by rememberSaveable { mutableStateOf(false) }
+    var devPanel by rememberSaveable { mutableStateOf(false) }
     val picked = controls.whiteBalance.takeIf { it.setting == pickerFor && it.enabled }
 
     // « Photo prise » on the shutter for a moment after each shot.
@@ -62,6 +65,12 @@ fun CameraScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        if (devActions != null) {
+            DevBanner(
+                onOpenPanel = { devPanel = true },
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+            )
+        }
         CameraHeader(
             tab = tab,
             onTabChange = { tab = it },
@@ -158,6 +167,17 @@ fun CameraScreen(
             dismissButton = {
                 TextButton(onClick = { bluetoothLiveViewDialog = false }) { Text(text = "OK") }
             },
+        )
+    }
+
+    if (devActions != null && devPanel) {
+        DevPanelSheet(
+            modeLabel = controls.modeLabel,
+            lensLabel = controls.focus.lensLabel,
+            liveViewOn = controls.liveViewOn,
+            actions = devActions,
+            onLiveView = actions::onLiveView,
+            onDismiss = { devPanel = false },
         )
     }
 

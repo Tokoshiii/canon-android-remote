@@ -226,4 +226,13 @@ class ControlsModelTest {
         assertTrue(f.afEnabled)
         assertNull(f.afHint)
     }
+
+    @Test
+    fun settingValueLabelUsesCanonTables() {
+        assertEquals("1/125", settingValueLabel(CameraSetting.SHUTTER, 0x70))
+        assertEquals("f/5.6", settingValueLabel(CameraSetting.APERTURE, 0x30))
+        assertEquals("400", settingValueLabel(CameraSetting.ISO, 0x58))
+        assertEquals("Ombre", settingValueLabel(CameraSetting.WHITE_BALANCE, 8))
+        assertEquals("0xEE", settingValueLabel(CameraSetting.ISO, 0xEE))
+    }
 }
