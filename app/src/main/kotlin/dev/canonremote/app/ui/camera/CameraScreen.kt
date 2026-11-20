@@ -107,6 +107,7 @@ fun CameraScreen(
                         step = preferences.focusStep,
                         onAutofocus = actions::onAutofocus,
                         onFocus = actions::onFocus,
+                        bluetoothRemote = bluetoothRemote,
                     )
 
                     Row(

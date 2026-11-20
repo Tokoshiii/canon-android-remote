@@ -12,7 +12,9 @@ import dev.canonremote.app.relay.RelayUiState
 import dev.canonremote.app.relay.RemoteLinkUi
 import dev.canonremote.app.settings.AppMode
 import dev.canonremote.app.settings.AppSettings
+import dev.canonremote.app.timer.ShotOutcome
 import dev.canonremote.app.timer.ShutterTimer
+import dev.canonremote.app.timer.shootIfStillActive
 import dev.canonremote.app.timer.TimerState
 import dev.canonremote.app.ui.CameraActions
 import dev.canonremote.app.ui.camera.DevPanelActions
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
@@ -98,6 +101,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     /** One event per shot the camera took (after the countdown): vibration, sound, « Photo prise ». */
     val shots: SharedFlow<Unit> = _shots.asSharedFlow()
 
+    init {
+        // A countdown belongs to the camera it was started on: another camera cancels it.
+        viewModelScope.launch {
+            hub.activeCamera.drop(1).collect {
+                if (timerState.value is TimerState.Counting) log.info("Retardateur annulé : l'appareil a changé")
+                timer.cancel()
+            }
+        }
+    }
+
     override fun connect() = hub.connectUsb()
 
     override fun disconnect() = hub.disconnectUsb()
@@ -132,10 +145,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     override fun onShutter() {
+        // The camera is fixed at the press: the shot never goes to one that replaced it meanwhile.
+        val cam = hub.activeCamera.value ?: run {
+            timer.cancel()
+            return
+        }
         timer.press(settings.preferences.value.timerDelay) {
-            val cam = hub.activeCamera.value ?: return@press
-            // Feedback only once the camera has taken the picture.
-            if (cam.shoot()) _shots.tryEmit(Unit)
+            when (shootIfStillActive(cam, { hub.activeCamera.value }) { it.shoot() }) {
+                // Feedback only once the camera has taken the picture.
+                ShotOutcome.TAKEN -> _shots.tryEmit(Unit)
+                ShotOutcome.CAMERA_CHANGED -> log.warn("Déclenchement annulé : l'appareil a changé")
+                ShotOutcome.FAILED -> Unit
+            }
         }
     }
 

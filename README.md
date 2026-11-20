@@ -44,8 +44,8 @@ Autorisations demandées au moment voulu : notifications (relais), « Appareils 
 
 ## Écran Appareil
 
-En haut : **Basique / Avancé**, puis le mode de la molette du boîtier (M, Av, Tv, P, B ou
-« Auto » pour les scènes) et l'état de la connexion (toucher → onglet Connexion).
+En haut : **Basique / Avancé**, puis le mode de la molette du boîtier (M, Av, Tv, P, B,
+C1–C3, « A+ » ou « Scène » pour les modes scène) et l'état de la connexion (toucher → onglet Connexion).
 
 **Basique**
 - **Vitesse, Ouverture, ISO** : un curseur à crans par réglage, un cran par valeur proposée

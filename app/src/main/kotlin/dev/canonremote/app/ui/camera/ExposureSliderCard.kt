@@ -2,10 +2,13 @@ package dev.canonremote.app.ui.camera
 
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -74,6 +77,9 @@ fun ExposureSliderCard(
     // Locked by the mode: the camera chooses, so « Auto » in large (Bulb stays « Bulb »).
     val headline = if (slider.locked && slider.valueLabel != BULB) AUTO else valueLabel
     val colors = SliderDefaults.colors()
+    val interactionSource = remember { MutableInteractionSource() }
+    // Locked with no known value: no thumb, rather than one on the first notch that reads as a value.
+    val hideThumb = slider.locked && localIndex == null && slider.index < 0
 
     Surface(
         shape = RoundedCornerShape(24.dp),
@@ -129,6 +135,18 @@ fun ExposureSliderCard(
                     valueRange = 0f..last.coerceAtLeast(1).toFloat(),
                     steps = (slider.options.size - 2).coerceAtLeast(0),
                     colors = colors,
+                    interactionSource = interactionSource,
+                    thumb = {
+                        if (hideThumb) {
+                            Spacer(modifier = Modifier.size(20.dp))
+                        } else {
+                            SliderDefaults.Thumb(
+                                interactionSource = interactionSource,
+                                colors = colors,
+                                enabled = slider.enabled,
+                            )
+                        }
+                    },
                     track = { state ->
                         SliderDefaults.Track(
                             sliderState = state,

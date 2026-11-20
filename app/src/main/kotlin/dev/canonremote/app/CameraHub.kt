@@ -177,6 +177,9 @@ class CameraHub(context: Context, val log: LogBus, private val settings: AppSett
                 .collect { wanted ->
                     val current = _dev.value
                     if (wanted && current == null) {
+                        // A failed USB connection lands here with its error: show it before the
+                        // simulated camera replaces the USB one as the active camera.
+                        _usbCamera.value?.let { usb -> drainError(usb, usb.state.value.lastError) }
                         log.info("[dev] Appareil simulé démarré (aucune commande n'est envoyée)")
                         _dev.value = DevCameraController(log, scope, DevTestImage::render)
                     } else if (!wanted && current != null) {

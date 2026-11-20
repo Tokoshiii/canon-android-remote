@@ -31,6 +31,7 @@ import dev.canonremote.core.FocusModel
 import dev.canonremote.core.FocusStep
 
 private const val LIVE_VIEW_HINT = "Proche / Loin : active le live view"
+private const val BLUETOOTH_HINT = "Proche / Loin : passe en Wi-Fi (live view requis)"
 
 /**
  * Mise au point: lens AF/MF indicator, Proche / AF / Loin. Proche and Loin move by the step size
@@ -44,6 +45,8 @@ fun FocusCard(
     onAutofocus: () -> Unit,
     onFocus: (FocusStep) -> Unit,
     modifier: Modifier = Modifier,
+    /** Over Bluetooth the live view (needed by Proche / Loin) is impossible: say so instead. */
+    bluetoothRemote: Boolean = false,
 ) {
     Surface(
         shape = RoundedCornerShape(24.dp),
@@ -121,7 +124,10 @@ fun FocusCard(
                     )
                 }
             }
-            val hint = listOfNotNull(focus.afHint, LIVE_VIEW_HINT.takeIf { connected && !focus.manualStepsEnabled })
+            val hint = listOfNotNull(
+                focus.afHint,
+                (if (bluetoothRemote) BLUETOOTH_HINT else LIVE_VIEW_HINT).takeIf { connected && !focus.manualStepsEnabled },
+            )
                 .joinToString(separator = " · ")
                 .takeIf { it.isNotEmpty() }
             hint?.let {
