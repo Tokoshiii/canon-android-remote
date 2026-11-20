@@ -123,9 +123,16 @@ class WebSocketLinksTest {
     fun connectIsCancellable() = runBlocking {
         // Accepts TCP but never answers the HTTP upgrade.
         ServerSocket(0).use { silent ->
-            thread(isDaemon = true) { runCatching { silent.accept() } }
-            val result = withTimeoutOrNull(500) { connectWebSocket(host = "127.0.0.1", port = silent.localPort) }
-            assertNull(result)
+            // Keep the accepted socket referenced and open for the whole test: an unreferenced
+            // socket can be closed early, which resets the connection instead of leaving it silent.
+            val accepted = java.util.concurrent.atomic.AtomicReference<java.net.Socket?>(null)
+            thread(isDaemon = true) { runCatching { accepted.set(silent.accept()) } }
+            try {
+                val result = withTimeoutOrNull(500) { connectWebSocket(host = "127.0.0.1", port = silent.localPort) }
+                assertNull(result)
+            } finally {
+                runCatching { accepted.get()?.close() }
+            }
         }
     }
 
