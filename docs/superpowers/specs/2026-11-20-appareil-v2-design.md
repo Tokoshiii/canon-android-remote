@@ -15,7 +15,7 @@ l'interface sans appareil, et corriger la liaison Bluetooth introuvable. Le time
    https://claude.ai/artifact/ULxQ1oPefZF8C187TTPqyx#artboard-Curseur).
 3. **Mode développeur** pour manipuler l'interface sans appareil.
 4. **Quatre réglages** : vibration au déclenchement et son, vibration à chaque cran
-   (interrupteur séparé), retardateur, taille des pas de mise au point, mémorisation des
+   (interrupteur séparé), retardateur (bouton à côté du déclencheur), taille des pas de mise au point, mémorisation des
    liaisons du relais.
 
 ## Non-objectifs
@@ -88,9 +88,23 @@ ne se rend jamais visible.
   Moyen=2 ou Grand=3). Proche/Loin nécessitent le live view (inchangé, aide affichée) ; AF
   désactivé si l'objectif est en MF (« Objectif en MF »).
 - **Balance des blancs** (feuille de choix existante) et **Live view** côte à côte.
-- **Déclencher** (pilule) avec retardateur : désactivé / 2 s / 10 s ; pendant le compte à
-  rebours le bouton affiche « Annuler · 2 » et un toucher annule. Le compte à rebours
-  s'exécute sur le téléphone qui déclenche (télécommande ou direct).
+- **Déclencher + retardateur** (maquette « 3 · Mini-roue »,
+  https://claude.ai/artifact/ULxQ1oPefZF8C187TTPqyx#artboard-Retardateur-Roue) :
+  - À gauche de la pilule Déclencher, un **bouton rond de même diamètre** (72 dp) avec une icône
+    de chronomètre : grisée si le retardateur est désactivé ; si activé, le délai (« 2 », « 10 »)
+    est écrit dans l'icône.
+  - Toucher ce bouton l'**étend** vers la droite en poussant Déclencher, qui devient **rond**
+    (icône seule). Le bouton étendu contient l'icône (un toucher la **replie** = valide) et une
+    **mini-roue verticale** Désactivé / 2 s / 10 s que l'on **fait glisser** ; valeur courante au
+    centre dans une pastille, voisines estompées.
+  - Toucher Déclencher quand il est rond **replie le retardateur et déclenche** (ou lance le
+    compte à rebours) en un seul toucher.
+  - Compte à rebours : la pilule affiche « Annuler · n » (fond `errorContainer`), un toucher annule.
+    Si le retardateur est étendu pendant le compte à rebours, celui-ci **continue** et le
+    déclencheur rond n'affiche **que le chiffre**. **Changer le délai** pendant le compte à rebours
+    l'**annule**.
+  - Le compte à rebours s'exécute sur le téléphone qui déclenche ; le délai choisi est mémorisé
+    (AppSettings). Pas de réglage du retardateur dans Paramètres.
 
 ### Onglet Avancé
 - Carte « Timelapse — bientôt » (le projet suivant la remplacera).
@@ -109,7 +123,7 @@ ne se rend jamais visible.
 ## 4. Réglages (Paramètres)
 - **Prise de vue** : Vibration au déclenchement (oui par défaut) ; Son au déclenchement (non,
   `MediaActionSound` SHUTTER_CLICK) ; Vibration à chaque cran (oui) — interrupteur séparé ;
-  Retardateur (désactivé / 2 s / 10 s) ; Pas de mise au point (Moyen / Grand, défaut Grand).
+  Pas de mise au point (Moyen / Grand, défaut Grand).
 - **Connexion** : Mémoriser les liaisons du relais (oui) → Wi-Fi local / Point d'accès /
   Bluetooth restaurés au lancement suivant.
 - Tous persistés dans `AppSettings` (testés en JVM).
