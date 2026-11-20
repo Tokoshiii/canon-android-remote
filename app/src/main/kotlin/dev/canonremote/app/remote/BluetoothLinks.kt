@@ -170,3 +170,8 @@ suspend fun connectBluetooth(device: BluetoothDevice): MessageChannel {
 fun bondedDevices(adapter: BluetoothAdapter): List<BluetoothDevice> =
     runCatching { adapter.bondedDevices?.toList().orEmpty() }.getOrDefault(emptyList())
         .sortedBy { it.name ?: it.address }
+
+/** The device as listed on the remote. Callers must hold BLUETOOTH_CONNECT (for the name). */
+@SuppressLint("MissingPermission")
+fun BluetoothDevice.toBtDevice(fallbackName: String? = null): BtDevice =
+    BtDevice(address = address, name = runCatching { name }.getOrNull() ?: fallbackName)

@@ -1,8 +1,12 @@
 package dev.canonremote.app.ui.connection
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -21,16 +26,20 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
@@ -39,9 +48,12 @@ import dev.canonremote.app.RelayDiscovery
 import dev.canonremote.app.RemoteTarget
 import dev.canonremote.app.relay.RemoteLinkUi
 import dev.canonremote.app.relay.RuntimePermissions
+import dev.canonremote.app.remote.BluetoothDeviceList
+import dev.canonremote.app.remote.BtDevice
 import dev.canonremote.app.remote.DiscoveredRelay
 import dev.canonremote.app.remote.QrPayload
 import dev.canonremote.app.remote.bondedDevices
+import dev.canonremote.app.remote.toBtDevice
 
 private const val JOIN_DENIED =
     "Rejoindre le point d'accès du relais demande l'autorisation « Appareils à proximité » (ou la localisation)."
@@ -186,42 +198,142 @@ private fun WifiRelaysCard(actions: ConnectionActions, onPick: (DiscoveredRelay)
     }
 }
 
+private const val SEARCH_HINT = "Sur le relais, touche « Rendre visible (2 min) », puis Rechercher."
+
 @SuppressLint("MissingPermission")
 @Composable
 private fun BluetoothRelaysCard(actions: ConnectionActions, permissions: PermissionRequester) {
+    val context = LocalContext.current
     val needed = remember { RuntimePermissions.bluetoothRemote(Build.VERSION.SDK_INT) }
-    var devices by remember { mutableStateOf<List<BluetoothDevice>?>(null) }
+    var list by remember { mutableStateOf(BluetoothDeviceList()) }
+    var loaded by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var searched by remember { mutableStateOf(false) }
+    var bonding by remember { mutableStateOf<String?>(null) } // address being paired
 
-    fun load() {
+    /** The adapter when Bluetooth is usable; otherwise explains why in [status]. */
+    fun usableAdapter(): BluetoothAdapter? {
         val adapter = actions.bluetoothAdapter()
         when {
-            adapter == null -> {
-                status = "Bluetooth indisponible sur cet appareil"
-                devices = emptyList()
+            adapter == null -> status = "Bluetooth indisponible sur cet appareil"
+            !adapter.isEnabled -> status = "Active le Bluetooth, puis touche Actualiser"
+            else -> return adapter
+        }
+        return null
+    }
+
+    fun loadBonded() {
+        loaded = true
+        val adapter = usableAdapter()
+        if (adapter == null) {
+            list = BluetoothDeviceList()
+            return
+        }
+        status = null
+        list = list.withBonded(bondedDevices(adapter).map { it.toBtDevice() })
+    }
+
+    fun connect(device: BluetoothDevice) {
+        actions.connectRemote(RemoteTarget.Bluetooth(device))
+    }
+
+    fun withPermissions(action: () -> Unit) {
+        permissions.request(permissions = needed, denial = BLUETOOTH_DENIED) { granted -> if (granted) action() }
+    }
+
+    fun search() = withPermissions {
+        loadBonded()
+        val adapter = usableAdapter() ?: return@withPermissions
+        list = list.clearNearby()
+        if (adapter.isDiscovering) adapter.cancelDiscovery()
+        if (adapter.startDiscovery()) {
+            searching = true
+            searched = true
+        } else {
+            status = "Impossible de lancer la recherche Bluetooth."
+        }
+    }
+
+    fun stopSearch() {
+        if (permissions.isGranted(needed)) runCatching { actions.bluetoothAdapter()?.cancelDiscovery() }
+        searching = false
+    }
+
+    fun pair(entry: BtDevice) = withPermissions {
+        val adapter = usableAdapter() ?: return@withPermissions
+        runCatching { adapter.cancelDiscovery() } // discovery slows pairing down
+        val device = adapter.getRemoteDevice(entry.address)
+        when {
+            device.bondState == BluetoothDevice.BOND_BONDED -> {
+                loadBonded()
+                connect(device)
             }
-            !adapter.isEnabled -> {
-                status = "Active le Bluetooth, puis touche Actualiser"
-                devices = emptyList()
+            device.createBond() -> {
+                bonding = entry.address
+                status = "Appairage avec ${entry.label}… Accepte la demande sur les deux téléphones."
             }
-            else -> {
-                val bonded = bondedDevices(adapter)
-                status = if (bonded.isEmpty()) {
-                    "Aucun appareil appairé. Appaire d'abord les deux téléphones dans les réglages Bluetooth."
-                } else {
-                    null
+            else -> status = "Appairage impossible avec ${entry.label}."
+        }
+    }
+
+    val onBroadcast by rememberUpdatedState<(Intent) -> Unit> { intent ->
+        val device = IntentCompat.getParcelableExtra(intent, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        when (intent.action) {
+            BluetoothAdapter.ACTION_DISCOVERY_STARTED -> searching = true
+            BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> searching = false
+            BluetoothDevice.ACTION_FOUND -> if (device != null && permissions.isGranted(needed)) {
+                val bonded = runCatching { device.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(false)
+                if (!bonded) list = list.withFound(device.toBtDevice(intent.getStringExtra(BluetoothDevice.EXTRA_NAME)))
+            }
+            BluetoothDevice.ACTION_BOND_STATE_CHANGED -> if (device != null && permissions.isGranted(needed)) {
+                val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                val mine = device.address == bonding
+                when (state) {
+                    BluetoothDevice.BOND_BONDED -> {
+                        loadBonded()
+                        if (mine) {
+                            bonding = null
+                            connect(device)
+                        }
+                    }
+                    BluetoothDevice.BOND_NONE -> {
+                        loadBonded()
+                        if (mine) {
+                            bonding = null
+                            status = "Appairage annulé ou refusé."
+                        }
+                    }
                 }
-                devices = bonded
             }
         }
     }
 
-    LaunchedEffect(Unit) { if (permissions.isGranted(needed)) load() }
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) = onBroadcast(intent)
+        }
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        }
+        // Exported: these protected broadcasts come from the Bluetooth stack's own uid, which a
+        // not-exported receiver would not get; other apps cannot send them.
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        onDispose {
+            runCatching { context.unregisterReceiver(receiver) }
+            stopSearch() // leaving the screen ends the discovery
+        }
+    }
+
+    LaunchedEffect(Unit) { if (permissions.isGranted(needed)) loadBonded() }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                text = "Relais Bluetooth appairés",
+                text = "Relais Bluetooth",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
@@ -237,29 +349,74 @@ private fun BluetoothRelaysCard(actions: ConnectionActions, permissions: Permiss
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
             }
-            devices.orEmpty().forEach { device ->
+
+            SectionLabel(text = "Appareils appairés")
+            if (loaded && list.paired.isEmpty() && status == null) {
+                SectionHint(text = "Aucun appareil appairé.")
+            }
+            list.paired.forEach { entry ->
                 ListItem(
-                    headlineContent = { Text(text = device.name ?: device.address) },
-                    supportingContent = { Text(text = device.address) },
+                    headlineContent = { Text(text = entry.label) },
+                    supportingContent = { Text(text = entry.address) },
                     modifier = Modifier.clickable(onClick = {
-                        permissions.request(permissions = needed, denial = BLUETOOTH_DENIED) { granted ->
-                            if (granted) actions.connectRemote(RemoteTarget.Bluetooth(device))
+                        withPermissions {
+                            usableAdapter()?.let { connect(it.getRemoteDevice(entry.address)) }
                         }
                     }),
                 )
             }
             TextButton(
-                onClick = {
-                    permissions.request(permissions = needed, denial = BLUETOOTH_DENIED) { granted ->
-                        if (granted) load()
-                    }
-                },
+                onClick = { withPermissions { loadBonded() } },
                 modifier = Modifier.padding(horizontal = 8.dp),
             ) {
-                Text(text = if (devices == null) "Afficher les appareils appairés" else "Actualiser")
+                Text(text = if (loaded) "Actualiser" else "Afficher les appareils appairés")
+            }
+
+            SectionLabel(text = "Appareils à proximité")
+            if (searching) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+            }
+            when {
+                list.nearby.isNotEmpty() -> list.nearby.forEach { entry ->
+                    ListItem(
+                        headlineContent = { Text(text = entry.label) },
+                        supportingContent = {
+                            Text(text = if (entry.address == bonding) "Appairage en cours…" else "Toucher pour appairer")
+                        },
+                        modifier = Modifier.clickable(enabled = bonding == null, onClick = { pair(entry) }),
+                    )
+                }
+                searching -> SectionHint(text = "Recherche en cours…")
+                searched -> SectionHint(text = "Aucun appareil trouvé. $SEARCH_HINT")
+                else -> SectionHint(text = SEARCH_HINT)
+            }
+            Row(modifier = Modifier.padding(horizontal = 8.dp)) {
+                if (searching) {
+                    TextButton(onClick = ::stopSearch) { Text(text = "Arrêter") }
+                } else {
+                    TextButton(onClick = ::search) { Text(text = "Rechercher") }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
+    )
+}
+
+@Composable
+private fun SectionHint(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(horizontal = 16.dp),
+    )
 }
 
 @Composable

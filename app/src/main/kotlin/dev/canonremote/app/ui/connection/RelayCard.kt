@@ -1,6 +1,11 @@
 package dev.canonremote.app.ui.connection
 
+import android.bluetooth.BluetoothAdapter
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,6 +39,8 @@ private const val HOTSPOT_DENIED =
     "Le point d'accès a besoin de l'autorisation « Appareils à proximité » (ou de la localisation)."
 private const val BLUETOOTH_DENIED =
     "Le relais Bluetooth a besoin de l'autorisation « Appareils à proximité »."
+
+private const val DISCOVERABLE_SECONDS = 120
 
 private fun linkPermissions(link: RelayLink): List<String> = when (link) {
     RelayLink.WIFI -> emptyList()
@@ -66,6 +74,27 @@ fun RelayCard(relay: RelayUiState, actions: ConnectionActions, permissions: Perm
         next(0)
     }
 
+    val discoverable = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+        onResult = {}, // RESULT_CANCELED when refused, else the granted duration: nothing to show
+    )
+
+    fun makeDiscoverable() {
+        permissions.request(
+            permissions = RuntimePermissions.bluetoothRelay(Build.VERSION.SDK_INT),
+            denial = BLUETOOTH_DENIED,
+        ) { granted ->
+            if (!granted) return@request
+            val intent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+                .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, DISCOVERABLE_SECONDS)
+            try {
+                discoverable.launch(intent)
+            } catch (e: ActivityNotFoundException) {
+                permissions.show("Impossible de rendre ce téléphone visible en Bluetooth.")
+            }
+        }
+    }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(text = "Relais", style = MaterialTheme.typography.titleMedium)
@@ -90,6 +119,10 @@ fun RelayCard(relay: RelayUiState, actions: ConnectionActions, permissions: Perm
                         }
                     },
                 )
+                if (link == RelayLink.BLUETOOTH && link in relay.links) {
+                    OutlinedButton(onClick = ::makeDiscoverable) { Text(text = "Rendre visible (2 min)") }
+                    Text(text = "Sur la télécommande, touche Rechercher", style = MaterialTheme.typography.bodySmall)
+                }
                 if (link == RelayLink.HOTSPOT && relay.hotspotStarting) {
                     Text(text = "Démarrage du point d'accès…", style = MaterialTheme.typography.bodySmall)
                 }
