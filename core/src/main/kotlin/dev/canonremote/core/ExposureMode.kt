@@ -23,10 +23,10 @@ fun modeLabel(code: Int?): String? = when (code) {
     2 -> "Av"
     3 -> "M"
     4 -> "B"
-    0x10 -> "C1"
-    0x11 -> "C2"
-    7 -> "C3"
-    8 -> "A+"
+    7 -> "C1"
+    0x10 -> "C2"
+    0x11 -> "C3"
+    9, 0x16 -> "A+"
     in SCENE_CODES -> "Scène"
     else -> "0x%X".format(code)
 }
